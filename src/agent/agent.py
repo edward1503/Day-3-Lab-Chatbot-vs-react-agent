@@ -122,6 +122,9 @@ class ReActAgent:
             if tool_name == "get_weather_forecast":
                 from src.tools.weather_safety import get_weather_forecast
                 return get_weather_forecast(**args)
+            elif tool_name == "get_air_quality":
+                from src.tools.weather_safety import get_air_quality
+                return get_air_quality(**args)
             elif tool_name == "search_flight_prices":
                 from src.tools.transportation import search_flight_prices
                 return str(search_flight_prices(**args))

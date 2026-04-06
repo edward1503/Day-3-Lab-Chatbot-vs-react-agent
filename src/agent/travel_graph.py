@@ -37,7 +37,9 @@ from src.prompts.prompt import (
     format_final_plan_prompt,
 )
 from src.tools.weather_tool import get_weather_forecast
+from src.tools.transportation import search_flight_prices
 from src.tools.attractions_tool import search_attractions
+
 from src.tools.distance_tool import calculate_distance
 from src.tools.hotel_tool import hotel_finder
 from src.tools.budget_tool import estimate_budget
@@ -58,22 +60,32 @@ load_dotenv()
 _llm_instance = None
 
 def get_llm() -> LLMProvider:
-    """Khởi tạo LLMProvider từ .env config (singleton)."""
+    """Khởi tạo LLMProvider từ .env config (singleton). Ưu tiên OpenAI -> Gemini fallback."""
     global _llm_instance
     if _llm_instance is None:
-        provider_type = os.getenv("DEFAULT_PROVIDER", "google").lower()
+        openai_key = os.getenv("OPENAI_API_KEY")
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        default_provider = os.getenv("DEFAULT_PROVIDER", "openai").lower()
         model_name = os.getenv("DEFAULT_MODEL")
+
+        # Logic: 
+        # 1. Nếu provider mặc định là openai và có key -> Dùng OpenAI
+        # 2. Nếu provider mặc định là google và có key -> Dùng Gemini
+        # 3. Fallback: Nếu có bất kỳ key nào thì dùng cái đó (Ưu tiên OpenAI)
         
-        if provider_type == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-            model_name = model_name or "gpt-4o"
-            _llm_instance = OpenAIProvider(model_name=model_name, api_key=api_key)
+        if default_provider == "openai" and openai_key:
+            _llm_instance = OpenAIProvider(model_name=model_name or "gpt-4o", api_key=openai_key)
+        elif default_provider == "google" and gemini_key:
+            _llm_instance = GeminiProvider(model_name=model_name or "gemini-1.5-flash", api_key=gemini_key)
+        elif openai_key:
+            _llm_instance = OpenAIProvider(model_name=model_name or "gpt-4o", api_key=openai_key)
+        elif gemini_key:
+            _llm_instance = GeminiProvider(model_name=model_name or "gemini-1.5-flash", api_key=gemini_key)
         else:
-            api_key = os.getenv("GEMINI_API_KEY")
-            model_name = model_name or "gemini-2.5-flash"
-            _llm_instance = GeminiProvider(model_name=model_name, api_key=api_key)
+            raise ValueError("Không tìm thấy OPENAI_API_KEY hoặc GEMINI_API_KEY trong .env")
             
     return _llm_instance
+
 
 
 def _call_llm(prompt: str, system_prompt: str = SYSTEM_PROMPT, context: str = "") -> str:
@@ -142,9 +154,10 @@ def parse_input_node(state: TravelAgentState) -> dict:
         history_str = "Không có"
 
     # --- PHASE 0: OOD CHECK ---
-    ood_prompt = format_ood_prompt(state["user_request"])
+    ood_prompt = format_ood_prompt(state["user_request"], chat_history=history_str)
     try:
-        ood_response = _call_llm(ood_prompt, system_prompt="Bạn là trợ lý phân loại ý định chính xác.", context="ood_check")
+        ood_response = _call_llm(ood_prompt, system_prompt="Bạn là trợ lý phân loại ý định chính xác có ngữ cảnh.", context="ood_check")
+
         ood_result = ood_response.strip().upper()
         
         # Check if LLM detected OOD content
@@ -174,10 +187,11 @@ def parse_input_node(state: TravelAgentState) -> dict:
         # Parse JSON
         parsed = json.loads(json_str)
 
-        # Trả lời hội thoại từ LLM
-        reply_msg = parsed.get("reply")
+        # Xử lý conversational (hỏi chung chung, xin đề xuất)
+        intent_val = parsed.get("intent", "plan_trip")
+        is_enough = parsed.get("is_enough_info", False)
         
-        # Hàm safe parse để tránh lỗi TypeError/ValueError
+        # Hàm safe parse 
         def _safe_float(val, default):
             if val is None: return default
             try: return float(str(val).replace(',', '').replace(' ', ''))
@@ -188,44 +202,41 @@ def parse_input_node(state: TravelAgentState) -> dict:
             try: return int(str(val).replace(',', '').replace(' ', ''))
             except: return default
 
-        # Xử lý conversational (hỏi chung chung, xin đề xuất)
-        if not parsed.get("is_enough_info") or not parsed.get("destination") or not parsed.get("days"):
-            logger.log_event("NODE_INCOMPLETE", {"node": "parse_input", "reason": "conversational"})
-            reply = reply_msg or "❓ Tôi cần thêm thông tin. Bạn muốn đi **đâu** và trong **bao nhiêu ngày**?"
-            return {
-                "travel_request": None,
-                "current_step": "parse_input",
-                "messages": [("assistant", reply)],
-            }
-
-        # Nếu đã đủ thông tin, parse request
         budget_val = _safe_float(parsed.get("budget"), 5_000_000)
         num_people_val = _safe_int(parsed.get("num_people"), 1)
         days_val = _safe_int(parsed.get("days"), 1)
-        transport_val = parsed.get("transport_mode")
-        if transport_val not in ["driving", "walking", "transit", "bicycling"]:
-            transport_val = "driving"
+        transport_val = parsed.get("transport_mode", "driving")
 
         travel_request = TravelRequest(
-            destination=str(parsed["destination"]),
+            destination=str(parsed.get("destination") or ""),
             days=days_val,
             budget=budget_val,
             num_people=num_people_val,
             preferences=str(parsed.get("preferences") or "Không có yêu cầu đặc biệt"),
-            transport_mode=TransportMode(transport_val),
+            transport_mode=TransportMode(transport_val if transport_val in ["driving", "walking", "transit", "bicycling"] else "driving"),
+            origin=parsed.get("origin", "SGN"),
+            start_date=parsed.get("start_date"),
+            intent=intent_val,
+            is_enough_info=is_enough,
+            reply=parsed.get("reply")
         )
 
-        logger.log_event("NODE_COMPLETE", {"node": "parse_input", "parsed": travel_request.model_dump()})
+        logger.log_event("NODE_COMPLETE", {"node": "parse_input", "intent": intent_val, "is_enough": is_enough})
 
-        # Báo cáo rằng đã nhận yêu cầu và bắt đầu làm
-        start_msg = reply_msg or f"📋 Đã hiểu! Đang lên kế hoạch đi {travel_request.destination} cho {num_people_val} người..."
-        start_msg += f"\n\n🔍 Đang kiểm tra thời tiết tại {travel_request.destination}..."
+        # Nếu là plan_trip mà chưa đủ info thì trả về reply hỏi thêm
+        if intent_val == "plan_trip" and not is_enough:
+            return {
+                "travel_request": travel_request,
+                "current_step": "parse_input",
+                "messages": [("assistant", travel_request.reply or "❓ Tôi cần thêm thông tin thành phố và số ngày để lên kế hoạch.")],
+            }
 
         return {
             "travel_request": travel_request,
             "current_step": "parse_input",
-            "messages": [("assistant", start_msg)],
+            "messages": [("assistant", travel_request.reply)] if travel_request.reply else [],
         }
+
 
     except Exception as e:
         logger.error(f"Parse input failed: {e}")
@@ -261,19 +272,18 @@ def check_weather_node(state: TravelAgentState) -> dict:
             f"- Độ ẩm: {weather.humidity}%\n"
             f"- {weather.forecast_summary}\n"
         )
-
         logger.log_event("NODE_COMPLETE", {
             "node": "check_weather",
             "is_rainy": needs_replan,
             "condition": weather.condition,
         })
-
+        
+        # Cập nhật state
         return {
             "weather": weather,
-            "needs_replanning": needs_replan,
             "activity_type": activity_type,
+            "needs_replanning": needs_replan,
             "current_step": "check_weather",
-            "messages": [("assistant", weather_msg)],
         }
 
     except (ValueError, NotImplementedError) as e:
@@ -308,6 +318,84 @@ def check_weather_node(state: TravelAgentState) -> dict:
             "error": f"Lỗi kiểm tra thời tiết: {str(e)}",
             "messages": [("assistant", f"⚠️ Không kiểm tra được thời tiết: {str(e)}. Tiếp tục với kế hoạch ngoài trời.")],
         }
+def direct_qa_node(state: TravelAgentState) -> dict:
+    """
+    Node xử lý câu hỏi trực tiếp bằng ReAct Agent.
+    Dành cho các câu hỏi đơn lẻ không cần lên plan 3 ngày.
+    """
+    logger.log_event("NODE_START", {"node": "direct_qa"})
+    
+    from src.agent.agent import ReActAgent
+    from datetime import datetime
+    
+    # Lấy lịch sử chat
+    chat_history = state.get("chat_history", [])
+    history_str = ""
+    for msg in chat_history[-5:]:
+        if isinstance(msg, dict):
+            history_str += f"{msg.get('role', 'unknown')}: {msg.get('content', '')}\n"
+            
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    rich_query = f"Hôm nay là: {current_date}\n\nLịch sử trò chuyện:\n{history_str}\n\nCâu hỏi hiện tại: {state['user_request']}\n\n(Lưu ý: Dùng Lịch sử trò chuyện để điền các thông tin còn thiếu như điểm đi, điểm đến, ngày tháng NẾU CẦN THIẾT.)"
+    
+    # Định nghĩa danh sách tools cho ReActAgent
+
+    tools = [
+        {"name": "get_weather_forecast", "description": "Lấy dự báo thời tiết và chất lượng không khí (AQI).", "parameters": {"city": "string", "days": "int"}},
+        {"name": "search_flight_prices", "description": "Tìm kiếm giá vé máy bay HAN/SGN/DAD.", "parameters": {"origin": "string", "destination": "string", "date": "YYYY-MM-DD"}},
+        {"name": "track_flight_status", "description": "Theo dõi trạng thái chuyến bay real-time.", "parameters": {"flight_number": "string"}},
+        {"name": "search_hotels", "description": "Tìm khách sạn tại một thành phố.", "parameters": {"location": "string", "check_in": "YYYY-MM-DD", "check_out": "YYYY-MM-DD"}},
+    ]
+    
+    agent = ReActAgent(llm=get_llm(), tools=tools)
+    response = agent.run(rich_query, skip_ood=True)
+    
+    return {
+        "current_step": "direct_qa",
+        "messages": [("assistant", f"💡 **Câu trả lời trực tiếp:**\n\n{response}")]
+    }
+
+
+def route_by_intent(state: TravelAgentState) -> str:
+    """Điều hướng dựa trên intent của user."""
+    req = state.get("travel_request")
+    if not req:
+        return "END"
+        
+    if req.intent == "direct_qa":
+        return "direct_qa"
+    
+    # Nếu là plan_trip nhưng chưa đủ info thì kết thúc để user nhập tiếp
+    if req.intent == "plan_trip" and not req.is_enough_info:
+        return "END"
+        
+    return "check_weather"
+
+def search_flights_node(state: TravelAgentState) -> dict:
+    """Node tìm kiếm vé máy bay (Transportation)."""
+    logger.log_event("NODE_START", {"node": "search_flights"})
+    req = state["travel_request"]
+    
+    # Ưu tiên lấy từ request, nếu không thì mặc định SGN
+    origin = req.origin if req.origin else "SGN"
+    
+    # Lấy ngày từ request (start_date), nếu không thì mặc định ngày mai
+    from datetime import datetime, timedelta
+    date_str = req.start_date
+    if not date_str:
+        date_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    try:
+        flights = search_flight_prices(origin, req.destination, date_str)
+        logger.log_event("NODE_COMPLETE", {"node": "search_flights", "best_price": flights.best_option.price if flights.best_option else 0})
+        return {
+            "flight_info": flights.best_option,
+            "current_step": "search_flights"
+        }
+    except Exception as e:
+        logger.error(f"Flight search failed: {e}")
+        return {"current_step": "search_flights"}
+
 
 
 def route_by_weather(state: TravelAgentState) -> Literal["ask_user_replan", "search_attractions"]:
@@ -531,7 +619,13 @@ def estimate_budget_node(state: TravelAgentState) -> dict:
         hotel_price = 500_000  # 500k VNĐ mặc định
 
     # --- Tính chi phí di chuyển ---
+    # Bao gồm vé máy bay khứ hồi nếu có + Taxi nội thành
     transport_total = 0
+    flight_cost_per_person = 0
+    if state.get("flight_info") and hasattr(state["flight_info"], "price"):
+        flight_cost_per_person = state["flight_info"].price * 2 # Khứ hồi
+        transport_total += flight_cost_per_person * travel_req.num_people
+
     if distances:
         for d in distances:
             dist_km = d.distance_km if hasattr(d, "distance_km") else d.get("distance_km", 0)
@@ -549,16 +643,18 @@ def estimate_budget_node(state: TravelAgentState) -> dict:
         )
 
         nights = max(travel_req.days - 1, 1)
+        flight_msg = f" (đã gồm {flight_cost_per_person:,.0f}/người vé máy bay khứ hồi)" if flight_cost_per_person > 0 else ""
         budget_msg = (
             f"💰 **Chi phí ước tính ({travel_req.days} ngày {nights} đêm, {travel_req.num_people} người):**\n\n"
             f"| Hạng mục | Chi tiết | Chi phí |\n"
             f"|---|---|---|\n"
             f"| 🏨 Khách sạn | {hotel_price:,.0f}/đêm × {nights} đêm | {budget_result.hotel_total:,.0f} VNĐ |\n"
             f"| 🍜 Ăn uống | {budget_result.food_per_day:,.0f}/người/ngày × {travel_req.days} ngày × {travel_req.num_people} người | {budget_result.food_total:,.0f} VNĐ |\n"
-            f"| 🚗 Di chuyển | Taxi/Grab ước tính | {budget_result.transport_total:,.0f} VNĐ |\n"
+            f"| 🚗 Di chuyển | Taxi/Grab + Vé máy bay {flight_msg} | {budget_result.transport_total:,.0f} VNĐ |\n"
             f"| 🎫 Vé tham quan | Phí vào cổng | {budget_result.activities_total:,.0f} VNĐ |\n"
             f"| **TỔNG CỘNG** | | **{budget_result.grand_total:,.0f} VNĐ** |\n\n"
         )
+
 
         if budget_result.is_within_budget:
             budget_msg += f"✅ Nằm trong ngân sách ({travel_req.budget:,.0f} VNĐ)! Còn dư: **{budget_result.remaining_budget:,.0f} VNĐ**"
@@ -590,12 +686,13 @@ def generate_plan_node(state: TravelAgentState) -> dict:
     """
     logger.log_event("NODE_START", {"node": "generate_plan"})
 
-    travel_req = _get_travel_request(state)
+    travel_req = state["travel_request"]
     weather = state.get("weather")
     attractions = state.get("attractions", [])
     distances = state.get("distances", [])
     hotels = state.get("hotels", [])
     budget = state.get("budget")
+    flight_info = state.get("flight_info")
 
     # Format thông tin cho prompt — safely handle both objects and dicts
     def _safe_dump(obj):
@@ -603,6 +700,8 @@ def generate_plan_node(state: TravelAgentState) -> dict:
             return "Không có dữ liệu"
         if hasattr(obj, "model_dump_json"):
             return obj.model_dump_json(indent=2)
+        if hasattr(obj, "model_dump"):
+            return json.dumps(obj.model_dump(), ensure_ascii=False, indent=2)
         if isinstance(obj, dict):
             return json.dumps(obj, ensure_ascii=False, indent=2)
         return str(obj)
@@ -625,6 +724,10 @@ def generate_plan_node(state: TravelAgentState) -> dict:
     distances_info = _safe_dump_list(distances)
     hotels_info = _safe_dump_list(hotels)
     budget_info = _safe_dump(budget)
+    
+    flights_info = "Không có thông tin chuyến bay."
+    if flight_info:
+        flights_info = f"Hãng: {flight_info.airline}, Giờ: {flight_info.departure_time} -> {flight_info.arrival_time}, Giá: {flight_info.price:,.0f} VNĐ"
 
     # Tạo prompt tổng hợp
     prompt = format_final_plan_prompt(
@@ -633,12 +736,17 @@ def generate_plan_node(state: TravelAgentState) -> dict:
         distances_info=distances_info,
         hotels_info=hotels_info,
         budget_info=budget_info,
+        flights_info=flights_info,
         destination=travel_req.destination,
         days=travel_req.days,
         num_people=travel_req.num_people,
         budget=travel_req.budget,
+        origin=travel_req.origin or "SGN",
+        start_date=travel_req.start_date or "Ngày mai",
         preferences=travel_req.preferences or "Không có yêu cầu đặc biệt",
     )
+
+
 
     try:
         plan_text = _call_llm(prompt, context="generate_plan")
@@ -665,6 +773,7 @@ def generate_plan_node(state: TravelAgentState) -> dict:
                 recommended_activity_type=ActivityType(activity_type_val),
                 attractions=[a for a in attractions if hasattr(a, "name")] if attractions else [],
                 hotel_recommendation=hotels[0] if hotels and hasattr(hotels[0], "name") else None,
+                flight_recommendation=flight_info,
                 daily_itinerary=[
                     DayPlan(**day) for day in plan_data.get("daily_itinerary", [])
                 ],
@@ -672,6 +781,7 @@ def generate_plan_node(state: TravelAgentState) -> dict:
                 travel_tips=plan_data.get("travel_tips", []),
                 summary=plan_data.get("summary", ""),
             )
+
 
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             # Nếu không parse được JSON, tạo plan đơn giản
@@ -824,6 +934,7 @@ def summarize_agent_trace_node(state: TravelAgentState) -> dict:
 def format_travel_plan_markdown(plan: TravelPlan, request: TravelRequest) -> str:
     """Chuyển TravelPlan thành markdown đẹp."""
 
+
     md = f"# 🧳 Kế Hoạch Du Lịch {plan.destination} — {plan.days} Ngày\n\n"
 
     # Weather
@@ -848,6 +959,13 @@ def format_travel_plan_markdown(plan: TravelPlan, request: TravelRequest) -> str
             md += f" ⭐{h.rating}"
         md += "\n\n"
 
+    # Flights
+    if plan.flight_recommendation:
+        f = plan.flight_recommendation
+        md += f"## ✈️ Chuyến bay đề xuất\n"
+        md += f"**{f.airline}** — {f.departure_time} ➡️ {f.arrival_time}\n"
+        md += f"- Giá vé: **{f.price:,.0f} VNĐ** (Mỗi chiều)\n\n"
+
     # Daily itinerary
     if plan.daily_itinerary:
         md += "## 📅 Lịch trình chi tiết\n\n"
@@ -865,13 +983,14 @@ def format_travel_plan_markdown(plan: TravelPlan, request: TravelRequest) -> str
     if plan.budget:
         b = plan.budget
         nights = max(b.days - 1, 1)
-        md += "## 💰 Chi phí\n\n"
-        md += "| Hạng mục | Chi phí |\n|---|---|\n"
-        md += f"| 🏨 Khách sạn ({nights} đêm) | {b.hotel_total:,.0f} VNĐ |\n"
-        md += f"| 🍜 Ăn uống ({b.days} ngày × {b.num_people} người) | {b.food_total:,.0f} VNĐ |\n"
-        md += f"| 🚗 Di chuyển | {b.transport_total:,.0f} VNĐ |\n"
-        md += f"| 🎫 Vé tham quan | {b.activities_total:,.0f} VNĐ |\n"
-        md += f"| **TỔNG CỘNG** | **{b.grand_total:,.0f} VNĐ** |\n\n"
+        md += "## 💰 Chi phí dự kiến\n\n"
+        md += "| Hạng mục | Chi tiết | Chi phí |\n"
+        md += "|---|---|---|\n"
+        md += f"| 🏨 Khách sạn | {nights} đêm | {b.hotel_total:,.0f} VNĐ |\n"
+        md += f"| 🍜 Ăn uống | {b.days} ngày | {b.food_total:,.0f} VNĐ |\n"
+        md += f"| 🚗 Di chuyển | Taxi + Vé máy bay khứ hồi | {b.transport_total:,.0f} VNĐ |\n"
+        md += f"| 🎫 Vé tham quan | Phí cổng | {b.activities_total:,.0f} VNĐ |\n"
+        md += f"| **TỔNG CỘNG** | | **{b.grand_total:,.0f} VNĐ** |\n\n"
 
         if b.is_within_budget:
             md += f"✅ Nằm trong ngân sách! Còn dư: **{b.remaining_budget:,.0f} VNĐ**\n\n"
@@ -890,6 +1009,7 @@ def format_travel_plan_markdown(plan: TravelPlan, request: TravelRequest) -> str
         md += f"---\n\n📌 **Tóm tắt:** {plan.summary}\n"
 
     return md
+
 
 
 # ============================================================
@@ -912,6 +1032,8 @@ def build_travel_graph() -> StateGraph:
     # ── Thêm nodes ──
     graph.add_node("parse_input", parse_input_node)
     graph.add_node("check_weather", check_weather_node)
+    graph.add_node("direct_qa", direct_qa_node)
+    graph.add_node("search_flights", search_flights_node)
     graph.add_node("ask_user_replan", ask_user_replan_node)
     graph.add_node("process_replan_response", process_replan_response_node)
     graph.add_node("search_attractions", search_attractions_node)
@@ -921,24 +1043,36 @@ def build_travel_graph() -> StateGraph:
     graph.add_node("generate_plan", generate_plan_node)
     graph.add_node("summarize_agent_trace", summarize_agent_trace_node)
 
+
+
     # ── Set entry point ──
     graph.set_entry_point("parse_input")
 
     # ── Kết nối edges ──
     graph.add_conditional_edges(
         "parse_input",
-        lambda s: "check_weather" if s.get("travel_request") else END,
-        {"check_weather": "check_weather", END: END},
+        route_by_intent,
+        {
+            "check_weather": "check_weather",
+            "direct_qa": "direct_qa",
+            "END": END
+        },
     )
+
+    graph.add_edge("direct_qa", END)
+
 
     graph.add_conditional_edges(
         "check_weather",
         route_by_weather,
         {
             "ask_user_replan": "ask_user_replan",
-            "search_attractions": "search_attractions",
+            "search_attractions": "search_flights",
         },
     )
+
+    graph.add_edge("search_flights", "search_attractions")
+
 
     graph.add_edge("ask_user_replan", END)
     graph.add_edge("process_replan_response", "search_attractions")

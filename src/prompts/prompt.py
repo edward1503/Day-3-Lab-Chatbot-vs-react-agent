@@ -37,15 +37,21 @@ PARSE_REQUEST_PROMPT = """Bạn là trợ lý du lịch thông minh. Dựa trên
 
 ## Định dạng output BẮT BUỘC (JSON chuẩn, không kèm markdown code block):
 {{
-    "reply": "Câu trả lời của bạn gửi cho người dùng. (Thân thiện, tự nhiên. Nếu họ chỉ chào hỏi, hãy chào lại. Nếu họ xin tư vấn chung chung, hãy đưa ra vài gợi ý. Nếu chưa đủ điểm đến và số ngày, hãy hỏi thêm. Nếu ĐÃ ĐỦ điều kiện lên kế hoạch, hãy bảo rằng 'Tuyệt vời, tôi đang bắt đầu lên kế hoạch cho bạn...')",
-    "is_enough_info": true/false (Chỉ đặt true NẾU user đã chốt cụ thể TÊN ĐỊA ĐIỂM và SỐ NGÀY ĐI),
-    "destination": "tên thành phố/địa điểm" (hoặc null nếu chưa có),
+    "reply": "Câu trả lời trực tiếp cho người dùng",
+    "is_enough_info": true/false (Đặt true NẾU là plan_trip và đủ Destination+Days, hoặc NẾU là direct_qa và đủ info tra cứu như Tên chuyến bay/Địa điểm),
+    "intent": "plan_trip|direct_qa",
+    "destination": "Mã IATA sân bay đến hoặc tên thành phố",
+
     "days": số_ngày (integer, hoặc null),
     "budget": ngân_sách_VNĐ (float, hoặc null),
     "num_people": số_người (integer, mặc định lấy 1),
     "preferences": "sở thích" (hoặc null),
-    "transport_mode": "driving|walking|transit|bicycling"
+    "transport_mode": "driving|walking|transit|bicycling",
+    "origin": "Mã IATA sân bay đi (3 ký tự, ví dụ: SGN, HAN) - Mặc định 'SGN' nếu không rõ",
+    "start_date": "YYYY-MM-DD" (mặc định null nếu không rõ)
 }}
+
+
 
 ## Quy tắc Trích xuất:
 - Nếu user nói "triệu" → nhân 1,000,000 (Ví dụ: "5 triệu" = 5000000). Luôn điền số nguyên/float, không điền chữ vào các trường số.
@@ -66,18 +72,22 @@ Output:
 # ============================================================
 
 OOD_CLASSIFICATION_PROMPT = """Bạn là một chuyên gia phân loại ý định (Intent Classifier). 
-Nhiệm vụ của bạn là xác định xem câu hỏi của người dùng có liên quan đến các chủ đề sau hay không:
+Nhiệm vụ của bạn là xác định xem câu hỏi MỚI NHẤT của người dùng có liên quan đến các chủ đề sau hay không:
 1. Du lịch (Travel): Tìm vé máy bay, khách sạn, địa điểm tham quan, lịch trình.
 2. Thời tiết (Weather): Dự báo thời tiết, chất lượng không khí tại một địa điểm.
-3. Các lời chào hỏi xã giao thông thường.
+3. Các lời chào hỏi xã giao hoặc CÂU TRẢ LỜI XÁC NHẬN (Ví dụ: "Đúng", "Có", "OK", "Đồng ý") trong ngữ cảnh đang thảo luận về du lịch.
 
-Nếu câu hỏi LIÊN QUAN đến các chủ đề trên, hãy trả về: IN_DOMAIN
-Nếu câu hỏi KHÔNG LIÊN QUAN (Ví dụ: Y tế, Chính trị, Lập trình, Nấu ăn, hack, hoặc các chủ đề khác), hãy trả về: OOD
+Nếu câu hỏi LIÊN QUAN hoặc là phản hồi trong ngữ cảnh du lịch, hãy trả về: IN_DOMAIN
+Nếu câu hỏi KHÔNG LIÊN QUAN (Ví dụ: Y tế, Chính trị, Lập trình, Nấu ăn...), hãy trả về: OOD
 
-User input: "{user_input}"
+## Ngữ cảnh hội thoại:
+{chat_history}
+
+User input mới nhất: "{user_input}"
 
 Trả về DUY NHẤT từ 'IN_DOMAIN' hoặc 'OOD'.
 """
+
 
 
 
@@ -146,22 +156,35 @@ FINAL_PLAN_PROMPT = """Dựa trên tất cả thông tin đã thu thập, hãy t
 ### 💰 Chi phí ước tính:
 {budget_info}
 
+### ✈️ Chuyến bay đề xuất:
+{flights_info}
+
 ### 📋 Yêu cầu ban đầu:
+
 - Điểm đến: {destination}
 - Số ngày: {days}
 - Số người: {num_people}
 - Ngân sách: {budget:,.0f} VNĐ
+- Điểm khởi hành: {origin}
+- Ngày đi: {start_date}
 - Sở thích: {preferences}
+
 
 ## Yêu cầu output:
 Tạo kế hoạch du lịch chi tiết theo JSON format sau:
 {{
     "destination": "tên điểm đến",
     "days": số_ngày,
-    "weather_summary": "tóm tắt thời tiết",
+    "weather_summary": "tóm tắt thời tiết và chất lượng không khí (AQI)",
     "recommended_activity_type": "indoor|outdoor|both",
     "attractions": [...],
     "hotel_recommendation": {{...}},
+    "flight_recommendation": {{
+        "airline": "hãng bay",
+        "departure_time": "thời gian",
+        "price": giá_vé
+    }},
+
     "daily_itinerary": [
         {{
             "day_number": 1,
@@ -183,7 +206,7 @@ Tạo kế hoạch du lịch chi tiết theo JSON format sau:
 
 PARSE_EXAMPLES = [
     {
-        "input": "Tôi muốn đi Đà Nẵng 3 ngày, budget 5 triệu",
+        "input": "Tôi muốn đi Đà Nẵng 3 ngày từ Hà Nội, budget 5 triệu vào ngày 20-04-2026",
         "output": TravelRequest(
             destination="Đà Nẵng",
             days=3,
@@ -191,31 +214,12 @@ PARSE_EXAMPLES = [
             num_people=1,
             preferences=None,
             transport_mode=TransportMode.DRIVING,
-        ),
-    },
-    {
-        "input": "Gia đình 4 người muốn đi Phú Quốc 5 ngày, thích biển, budget 30 triệu",
-        "output": TravelRequest(
-            destination="Phú Quốc",
-            days=5,
-            budget=30_000_000,
-            num_people=4,
-            preferences="biển",
-            transport_mode=TransportMode.DRIVING,
-        ),
-    },
-    {
-        "input": "Đi Sapa 2 ngày cuối tuần, khoảng 3tr, thích trekking",
-        "output": TravelRequest(
-            destination="Sapa",
-            days=2,
-            budget=3_000_000,
-            num_people=1,
-            preferences="trekking",
-            transport_mode=TransportMode.DRIVING,
+            origin="Hà Nội",
+            start_date="2026-04-20"
         ),
     },
 ]
+
 
 
 # ============================================================
@@ -227,9 +231,10 @@ def format_parse_prompt(user_input: str, chat_history: str = "Không có") -> st
     return PARSE_REQUEST_PROMPT.format(user_input=user_input, chat_history=chat_history)
 
 
-def format_ood_prompt(user_input: str) -> str:
-    """Tạo prompt để kiểm tra nội dung ngoài phạm vi (OOD)."""
-    return OOD_CLASSIFICATION_PROMPT.format(user_input=user_input)
+def format_ood_prompt(user_input: str, chat_history: str = "Không có") -> str:
+    """Tạo prompt để kiểm tra nội dung ngoài phạm vi (OOD) có kèm ngữ cảnh."""
+    return OOD_CLASSIFICATION_PROMPT.format(user_input=user_input, chat_history=chat_history)
+
 
 
 
@@ -259,10 +264,13 @@ def format_final_plan_prompt(
     distances_info: str,
     hotels_info: str,
     budget_info: str,
+    flights_info: str,
     destination: str,
     days: int,
     num_people: int,
     budget: float,
+    origin: str,
+    start_date: str,
     preferences: str = "Không có yêu cầu đặc biệt",
 ) -> str:
     """Tạo prompt tổng hợp kế hoạch cuối cùng."""
@@ -272,9 +280,14 @@ def format_final_plan_prompt(
         distances_info=distances_info,
         hotels_info=hotels_info,
         budget_info=budget_info,
+        flights_info=flights_info,
         destination=destination,
         days=days,
         num_people=num_people,
         budget=budget,
+        origin=origin,
+        start_date=start_date,
         preferences=preferences,
     )
+
+

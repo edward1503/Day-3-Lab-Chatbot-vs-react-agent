@@ -45,23 +45,30 @@ class ReActAgent:
         6. KHÔNG ĐƯỢC trả về bất kỳ văn bản nào nằm ngoài định dạng JSON này.
         """
 
-    def run(self, user_input: str) -> str:
+    def run(self, user_input: str, skip_ood: bool = False) -> str:
         logger.log_event("AGENT_START", {"input": user_input, "model": self.llm.model_name})
         
         # --- PHASE 0: OOD CHECK ---
         # (Đơn giản hóa bằng cách hỏi LLM trực tiếp hoặc dùng regex)
-        if self._is_out_of_domain(user_input):
+        if not skip_ood and self._is_out_of_domain(user_input):
             return "Xin lỗi, tôi là trợ lý du lịch. Tôi không thể hỗ trợ các vấn đề nằm ngoài phạm vi du lịch như y tế, chính trị hay lập trình."
+
 
         history = [{"role": "user", "content": user_input}]
         steps = 0
 
         while steps < self.max_steps:
+            # Format history thành chuỗi liên tục để LLM không bị quên ngữ cảnh
+            full_prompt = ""
+            for msg in history:
+                full_prompt += f"{msg['role'].upper()}: {msg['content']}\n"
+                
             # 1. Gọi LLM để lấy Thought/Action
             response = self.llm.generate(
-                prompt=history[-1]["content"], 
+                prompt=full_prompt.strip(), 
                 system_prompt=self.get_system_prompt()
             )
+
             
             # Ghi log metrics cho từng bước gọi LLM
             tracker.track_request(
@@ -88,20 +95,32 @@ class ReActAgent:
 
                 # 4. Thực thi Action
                 if action_data.action:
+                    # Ghi nhớ lại thought+action của model
+                    history.append({
+                        "role": "assistant",
+                        "content": clean_json
+                    })
+                    
                     observation = self._execute_tool(action_data.action, action_data.action_input or {})
                     history.append({
-                        "role": "assistant", 
+                        "role": "system", 
                         "content": f"Observation: {observation}"
                     })
+
                 else:
                     break
 
             except (ValidationError, json.JSONDecodeError) as e:
                 logger.error(f"Lỗi parse JSON hoặc Validate: {e}")
                 history.append({
-                    "role": "assistant", 
+                    "role": "assistant",
+                    "content": llm_output
+                })
+                history.append({
+                    "role": "system", 
                     "content": f"Lỗi định dạng JSON: Vui lòng thử lại và chỉ trả về JSON hợp lệ."
                 })
+
 
             steps += 1
             
@@ -155,10 +174,13 @@ class ReActAgent:
         # Import động các công cụ đã được Member A, B, C, D định nghĩa
         try:
             if tool_name == "get_weather_forecast":
-                from src.tools.weather_safety import get_weather_forecast
+                from src.tools.weather_tool import get_weather_forecast
+
                 return get_weather_forecast(**args)
             elif tool_name == "get_air_quality":
-                from src.tools.weather_safety import get_air_quality
+                # AQI is also now in weather_tool
+                from src.tools.weather_tool import get_weather_forecast as get_air_quality
+
                 return get_air_quality(**args)
             elif tool_name == "search_flight_prices":
                 from src.tools.transportation import search_flight_prices

@@ -20,6 +20,8 @@ load_dotenv()
 
 OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 BASE_URL = "https://api.openweathermap.org/data/2.5/forecast"
+AQI_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+
 
 # Weather codes mà chỉ ra mưa/bão
 RAINY_MAIN_CONDITIONS = {"Rain", "Drizzle", "Thunderstorm"}
@@ -108,7 +110,40 @@ def get_weather_forecast(city: str, days: int = 3) -> WeatherInfo:
     else:
         forecast_summary += "Thời tiết thuận lợi cho các hoạt động ngoài trời."
 
+    # --- PHASE 2: Check AQI (Open-Meteo) ---
+    aqi_val = None
+    aqi_desc = "Không có dữ liệu"
+    try:
+        # Lấy tọa độ từ OpenWeather response
+        lat = data.get("city", {}).get("coord", {}).get("lat")
+        lon = data.get("city", {}).get("coord", {}).get("lon")
+        if lat and lon:
+            aqi_params = {
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": "us_aqi",
+                "timezone": "auto",
+                "forecast_days": 1
+            }
+            aqi_res = requests.get(AQI_URL, params=aqi_params, timeout=5)
+            if aqi_res.status_code == 200:
+                aqi_data = aqi_res.json()
+                # Lấy AQI hiện tại (phần tử đầu tiên của hourly)
+                aqi_list = aqi_data.get("hourly", {}).get("us_aqi", [])
+                if aqi_list:
+                    aqi_val = int(aqi_list[0])
+                    if aqi_val <= 50: aqi_desc = "Tốt (Lý tưởng cho hoạt động ngoài trời)"
+                    elif aqi_val <= 100: aqi_desc = "Trung bình (Có thể nhạy cảm với một số người)"
+                    elif aqi_val <= 150: aqi_desc = "Kém (Hạn chế vận động mạnh ngoài trời lâu)"
+                    elif aqi_val <= 200: aqi_desc = "Xấu (Nên ưu tiên hoạt động trong nhà)"
+                    else: aqi_desc = "Rất Nguy hại (Tránh ra ngoài)"
+    except Exception as e:
+        logger.error(f"AQI check skipped due to error: {e}")
+
+    forecast_summary += f" Chỉ số AQI: {aqi_val} ({aqi_desc})."
+
     latency_ms = int((time.time() - start_time) * 1000)
+
 
     result = WeatherInfo(
         city=data.get("city", {}).get("name", city),
@@ -119,7 +154,10 @@ def get_weather_forecast(city: str, days: int = 3) -> WeatherInfo:
         forecast_summary=forecast_summary,
         wind_speed=round(avg_wind, 1) if avg_wind else None,
         icon=icon,
+        aqi=aqi_val,
+        aqi_description=aqi_desc
     )
+
 
     logger.log_event("TOOL_COMPLETE", {
         "tool": "get_weather_forecast",

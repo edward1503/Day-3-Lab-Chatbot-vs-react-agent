@@ -45,6 +45,22 @@ class TravelRequest(BaseModel):
         default=TransportMode.DRIVING,
         description="Phương tiện di chuyển ưu tiên"
     )
+    origin: Optional[str] = Field(
+        default="Hồ Chí Minh",
+        description="Điểm khởi hành, ví dụ: 'Hà Nội' hoặc 'SGN'"
+    )
+    start_date: Optional[str] = Field(
+        default=None,
+        description="Ngày bắt đầu hành trình (YYYY-MM-DD)"
+    )
+    intent: str = Field(
+        default="plan_trip",
+        description="Ý định: 'plan_trip' (lên kế hoạch đầy đủ) hoặc 'direct_qa' (hỏi đáp nhanh)"
+    )
+    reply: Optional[str] = Field(default=None, description="Câu trả lời của bạn gửi cho người dùng...")
+    is_enough_info: bool = Field(default=True, description="true NẾU là plan_trip và đủ Destination+Days, hoặc NẾU là direct_qa và đủ info tra cứu")
+
+
 
 
 # ============================================================
@@ -63,6 +79,9 @@ class WeatherInfo(BaseModel):
     )
     wind_speed: Optional[float] = Field(default=None, description="Tốc độ gió (m/s)")
     icon: Optional[str] = Field(default=None, description="Weather icon code từ OpenWeatherMap")
+    aqi: Optional[int] = Field(default=None, description="Chỉ số chất lượng không khí (AQI)")
+    aqi_description: Optional[str] = Field(default=None, description="Mô tả chất lượng không khí (Tốt, Trung bình, Ô nhiễm...)")
+
 
 
 class Attraction(BaseModel):
@@ -117,6 +136,24 @@ class HotelSearchResult(BaseModel):
     hotels: list[HotelOption] = Field(default_factory=list)
 
 
+class FlightInfo(BaseModel):
+    """Thông tin một chuyến bay."""
+    airline: str = Field(..., description="Hãng hàng không")
+    flight_number: Optional[str] = Field(default=None, description="Số hiệu chuyến bay")
+    departure_time: str = Field(..., description="Thời gian khởi hành")
+    arrival_time: str = Field(..., description="Thời gian đến")
+    price: float = Field(..., description="Giá vé (VNĐ)")
+    origin: str = Field(..., description="Điểm đi")
+    destination: str = Field(..., description="Điểm đến")
+
+
+class FlightSearchResult(BaseModel):
+    """Kết quả tìm kiếm chuyến bay."""
+    flights: list[FlightInfo] = Field(default_factory=list)
+    best_option: Optional[FlightInfo] = Field(default=None, description="Lựa chọn tốt nhất")
+
+
+
 class BudgetBreakdown(BaseModel):
     """Chi tiết phân bổ ngân sách: Total = Hotel + (Food × Days) + Transport."""
     hotel_total: float = Field(..., description="Tổng chi phí khách sạn (VNĐ)")
@@ -158,6 +195,10 @@ class TravelPlan(BaseModel):
     hotel_recommendation: Optional[HotelOption] = Field(
         default=None, description="Khách sạn được đề xuất"
     )
+    flight_recommendation: Optional[FlightInfo] = Field(
+        default=None, description="Chuyến bay được đề xuất"
+    )
+
     daily_itinerary: list[DayPlan] = Field(
         default_factory=list, description="Lịch trình từng ngày"
     )
@@ -166,3 +207,4 @@ class TravelPlan(BaseModel):
         default_factory=list, description="Mẹo du lịch hữu ích"
     )
     summary: str = Field(..., description="Tóm tắt kế hoạch bằng tiếng Việt")
+

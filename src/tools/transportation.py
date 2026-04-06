@@ -1,5 +1,7 @@
 from typing import List, Dict, Any, Optional
 from fast_flights import FlightData, Passengers, get_flights
+from src.schemas.models import FlightInfo, FlightSearchResult
+
 
 # Try to import FlightRadar24, but make it optional
 try:
@@ -9,17 +11,29 @@ except ImportError:
     FLIGHTRADAR24_AVAILABLE = False
     FlightRadar24API = None
 
-def search_flight_prices(origin: str, destination: str, date: str) -> str:
+def search_flight_prices(origin: str, destination: str, date: str) -> FlightSearchResult:
     """
-    [Member B] Tìm kiếm giá vé máy bay thực tế từ Google Flights cho ngày cụ thể.
+    Tìm kiếm giá vé máy bay thực tế từ Google Flights.
     Args:
-        origin: Mã IATA sân bay đi (VD: HAN, SGN)
-        destination: Mã IATA sân bay đến
+        origin: Mã IATA hoặc tên thành phố (HAN, SGN, Da Nang, ...)
+        destination: Mã IATA hoặc tên thành phố
         date: Ngày bay (YYYY-MM-DD)
     """
+    # Mapping đơn giản cho các thành phố phổ biến nếu không phải IATA
+    iata_map = {
+        "hà nội": "HAN", "hanoi": "HAN", "hn": "HAN",
+        "hồ chí minh": "SGN", "saigon": "SGN", "tphcm": "SGN", "ho chi minh": "SGN", "sg": "SGN",
+        "đà nẵng": "DAD", "da nang": "DAD",
+        "nha trang": "CXR", "phú quốc": "PQC", "phu quoc": "PQC",
+        "đà lạt": "DLI", "da lat": "DLI", "huế": "HUI", "hue": "HUI"
+    }
+
+    
+    origin_iata = iata_map.get(origin.lower(), origin).upper()
+    dest_iata = iata_map.get(destination.lower(), destination).upper()
+
     try:
-        # GPT-4o sẽ tự động cung cấp mã IATA nên chúng ta dùng trực tiếp
-        flight_data = [FlightData(date=date, from_airport=origin.upper(), to_airport=destination.upper())]
+        flight_data = [FlightData(date=date, from_airport=origin_iata, to_airport=dest_iata)]
         passengers = Passengers(adults=1)
         
         result = get_flights(
@@ -29,16 +43,25 @@ def search_flight_prices(origin: str, destination: str, date: str) -> str:
             seat="economy"
         )
         
-        if not result.flights:
-            return f"Không tìm thấy vé máy bay từ {origin} đến {destination} vào ngày {date}."
+        flights = []
+        for f in result.flights[:5]:
+            flights.append(FlightInfo(
+                airline=f.name,
+                flight_number=None, # fast-flights doesn't specify number easily
+                departure_time=f.departure,
+                arrival_time=f.arrival,
+                price=float(str(f.price).replace(',', '').replace('.', '').replace(' ', '').replace('VNĐ', '').replace('₫', '').strip() or 0),
+                origin=origin_iata,
 
-        output = f"✈️ KẾT QUẢ GIÁ VÉ ({origin.upper()} -> {destination.upper()}, ngày {date}):\n"
-        for i, flight in enumerate(result.flights[:5]):
-            output += f"{i+1}. {flight.name}: {flight.price} (Khởi hành: {flight.departure}, Đến: {flight.arrival})\n"
+                destination=dest_iata
+            ))
+            
+        best = flights[0] if flights else None
+        return FlightSearchResult(flights=flights, best_option=best)
         
-        return output
     except Exception as e:
-        return f"Lỗi khi tìm kiếm giá vé: {str(e)}"
+        return FlightSearchResult(flights=[])
+
 
 def track_flight_status(flight_number: str) -> str:
     """

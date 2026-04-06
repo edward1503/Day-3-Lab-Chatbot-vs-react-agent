@@ -265,8 +265,10 @@ if __name__ == "__main__":
     print("=" * 50)
 
     required_keys = {
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
         "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
     }
+
     optional_keys = {
         "OPENWEATHERMAP_API_KEY": os.getenv("OPENWEATHERMAP_API_KEY"),
         "TAVILY_API_KEY": os.getenv("TAVILY_API_KEY"),
@@ -285,9 +287,11 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 50)
 
-    if not required_keys["GEMINI_API_KEY"] or "your_" in (required_keys["GEMINI_API_KEY"] or ""):
-        print("❌ GEMINI_API_KEY chưa được cấu hình! Vui lòng cập nhật file .env")
+    # Chỉ cần một trong hai key là có thể chạy
+    if not (required_keys["GEMINI_API_KEY"] or required_keys["OPENAI_API_KEY"]):
+        print("❌ Cần ít nhất OPENAI_API_KEY hoặc GEMINI_API_KEY trong file .env để chạy!")
         exit(1)
+
 
     app = create_gradio_app()
     app.launch(

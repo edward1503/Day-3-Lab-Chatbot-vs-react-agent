@@ -15,6 +15,7 @@ from src.schemas.models import (
     BudgetBreakdown,
     TravelPlan,
     ActivityType,
+    FlightInfo,
 )
 
 
@@ -50,6 +51,8 @@ class TravelAgentState(TypedDict):
     distances: list[DistanceResult]             # Khoảng cách giữa các điểm
     hotels: list[HotelOption]                   # Danh sách khách sạn
     budget: Optional[BudgetBreakdown]           # Chi tiết chi phí
+    flight_info: Optional[FlightInfo]           # Thông tin vé máy bay
+
 
     # ── Control Flow ──
     activity_type: ActivityType                 # indoor/outdoor/both — dựa trên weather
@@ -75,7 +78,9 @@ def create_initial_state(user_input: str, chat_history: list = None) -> dict:
         "distances": [],
         "hotels": [],
         "budget": None,
+        "flight_info": None,
         "activity_type": ActivityType.BOTH,
+
         "needs_replanning": False,
         "user_confirmed_replan": None,
         "waiting_for_user": False,

@@ -38,9 +38,11 @@ class ReActAgent:
             "action_input": {{ "param_name": "value" }} hoặc null,
             "final_answer": "câu_trả_lời_cuối_cùng_hoặc_null"
         }}
-        2. Nếu bạn đã có câu trả lời cuối cùng, hãy điền vào 'final_answer' và để 'action' là null.
-        3. Nếu cần thêm thông tin, hãy chọn một 'action' phù hợp.
-        4. KHÔNG ĐƯỢC trả về văn bản ngoài định dạng JSON này.
+        2. Nếu bạn đã có câu trả lời cuối cùng hoặc công cụ (Tool) trả về kết quả "Không tìm thấy/Lỗi", hãy giải thích cho người dùng trong 'final_answer' và kết thúc (để 'action' là null).
+        3. Tuyệt đối KHÔNG gọi lại cùng một công cụ với cùng tham số nếu nó đã trả về kết quả không tìm thấy ở bước trước đó.
+        4. Hãy tận dụng kiến thức của bạn để tự động chuyển đổi tên địa danh (Vd: Hà Nội, Sài Gòn) sang mã sân bay IATA (Vd: HAN, SGN) khi gọi các công cụ tìm kiếm máy bay.
+        5. Luôn giữ phong cách phản hồi thân thiện, chuyên nghiệp.
+        6. KHÔNG ĐƯỢC trả về bất kỳ văn bản nào nằm ngoài định dạng JSON này.
         """
 
     def run(self, user_input: str) -> str:
@@ -120,9 +122,12 @@ class ReActAgent:
             if tool_name == "get_weather_forecast":
                 from src.tools.weather_safety import get_weather_forecast
                 return get_weather_forecast(**args)
-            elif tool_name == "search_flights":
-                from src.tools.transportation import search_flights
-                return str(search_flights(**args))
+            elif tool_name == "search_flight_prices":
+                from src.tools.transportation import search_flight_prices
+                return str(search_flight_prices(**args))
+            elif tool_name == "track_flight_status":
+                from src.tools.transportation import track_flight_status
+                return str(track_flight_status(**args))
             elif tool_name == "search_hotels":
                 from src.tools.stays_hotels import search_hotels
                 return str(search_hotels(**args))

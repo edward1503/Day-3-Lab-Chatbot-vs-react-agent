@@ -109,11 +109,46 @@ class ReActAgent:
         return "Tôi đã cố gắng xử lý nhưng không tìm ra câu trả lời cuối cùng trong giới hạn bước cho phép."
 
     def _is_out_of_domain(self, user_input: str) -> bool:
-        # Tạm thời dùng từ khóa đơn giản, trong thực tế sẽ dùng LLM để phân loại (Classifier)
-        off_topic_keywords = ["thuốc", "bệnh", "code", "lập trình", "chính trị", "đảng"]
-        for kw in off_topic_keywords:
-            if kw in user_input.lower():
+        """
+        Sử dụng LLM để phân loại liệu câu hỏi của người dùng có nằm trong phạm vi hỗ trợ (Du lịch & Thời tiết) hay không.
+        """
+        classification_prompt = f"""
+        Bạn là một chuyên gia phân loại ý định (Intent Classifier). 
+        Nhiệm vụ của bạn là xác định xem câu hỏi của người dùng có liên quan đến các chủ đề sau hay không:
+        1. Du lịch (Travel): Tìm vé máy bay, khách sạn, địa điểm tham quan, lịch trình.
+        2. Thời tiết (Weather): Dự báo thời tiết, chất lượng không khí tại một địa điểm.
+        3. Các lời chào hỏi xã giao thông thường.
+
+        Nếu câu hỏi LIÊN QUAN đến các chủ đề trên, hãy trả về: IN_DOMAIN
+        Nếu câu hỏi KHÔNG LIÊN QUAN (Ví dụ: Y tế, Chính trị, Lập trình, Nấu ăn, hack, hoặc các chủ đề khác), hãy trả về: OOD
+
+        User input: "{user_input}"
+        
+        Trả về DUY NHẤT từ 'IN_DOMAIN' hoặc 'OOD'.
+        """
+        
+        try:
+            response = self.llm.generate(
+                prompt=classification_prompt,
+                system_prompt="Bạn là một trợ lý phân loại ý định chính xác."
+            )
+            result = response["content"].strip().upper()
+            
+            # Đôi khi LLM có thể trả về thêm text, ta check xem có chứa OOD không
+            if "OOD" in result and "IN_DOMAIN" not in result:
+                logger.log_event("OOD_DETECTED", {"input": user_input, "reason": "LLM_CLASSIFIER"})
                 return True
+            if "IN_DOMAIN" in result:
+                return False
+                
+            # Fallback về keyword nếu LLM không trả về đúng định dạng
+            off_topic_keywords = ["thuốc", "bệnh", "code", "lập trình", "chính trị", "đảng", "hack"]
+            for kw in off_topic_keywords:
+                if kw in user_input.lower():
+                    return True
+        except Exception as e:
+            logger.error(f"Lỗi khi gọi LLM cho OOD check: {e}")
+            
         return False
 
     def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:

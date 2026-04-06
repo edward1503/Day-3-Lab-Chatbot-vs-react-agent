@@ -198,12 +198,19 @@ def parse_input_node(state: TravelAgentState) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"Parse input failed: {e}")
+        error_msg = str(e)
+        logger.error(f"Parse input failed: {error_msg}")
+        
+        if "429" in error_msg or "quota" in error_msg.lower() or "resource exhausted" in error_msg.lower():
+            reply_msg = "⚠️ **Lỗi API Gemini:** Key của bạn đã hết hạn mức (Quota Exceeded) hoặc bị giới hạn tốc độ. Vui lòng chờ một lát hoặc đổi API Key khác nhé!"
+        else:
+            reply_msg = "🤖 Xin lỗi, tôi không xử lý được thông tin này do lỗi hệ thống. Bạn có thể nói rõ hơn được không? (Ví dụ: 'Tôi muốn đi Đà Lạt 3 ngày 2 triệu')"
+
         return {
             "travel_request": None,
             "current_step": "parse_input",
-            "error": f"Lỗi parse JSON: {e}",
-            "messages": [("assistant", "🤖 Xin lỗi, tôi không xử lý được thông tin này. Bạn có thể nói rõ hơn được không? (Ví dụ: 'Tôi muốn đi Đà Lạt 3 ngày 2 triệu')")]
+            "error": f"Lỗi catch trong parse_input: {error_msg}",
+            "messages": [("assistant", reply_msg)]
         }
 
 

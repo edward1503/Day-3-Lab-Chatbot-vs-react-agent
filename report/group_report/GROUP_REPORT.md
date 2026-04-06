@@ -1,7 +1,7 @@
 # Group Report: Lab 3 - Production-Grade Agentic System
 
 - **Team Name**: Nhóm 2
-- **Team Members**: Nguyễn Duy Minh Hoàng (ID: 2A202600155), Nguyễn Lê Minh Luân (ID: 2A202600398)
+- **Team Members**: Nguyễn Duy Minh Hoàng (ID: 2A202600155), Nguyễn Lê Minh Luân (ID: 2A202600398), Đào Anh Quân (ID: 2A202600028)
 - **Deployment Date**: 2026-04-06
 
 ---
@@ -27,6 +27,12 @@ Luồng thực thi ReAct được triển khai thông qua một vòng lặp `whi
 | `get_air_quality` | `location` (str) | Kiểm tra chất lượng không khí (AQI, PM2.5, PM10) của một thành phố. |
 | `search_flight_prices` | `origin`, `destination`, `date` | Lấy giá vé máy bay thật từ Google Flights trong một ngày cụ thể. |
 | `track_flight_status`  | `flight_number` (str) | Theo dõi lộ trình chuyến bay theo thời gian thực (Real-time). |
+| `search_hotels` | `location`, `check_in`, `check_out`, `guests` | Tìm kiếm khách sạn tại một địa điểm với dữ liệu giá thực tế (4-5 khách sạn/thành phố). |
+| `get_hotel_details` | `hotel_name`, `location` | Lấy thông tin chi tiết về chính sách, tiện ích và giờ nhận phòng của khách sạn. |
+| `compare_hotels` | `location`, `budget_min`, `budget_max` | So sánh khách sạn trong phạm vi giá ngân sách. |
+| `explore_top_attractions` | `location`, `limit`, `kind` | Khám phá các điểm du lịch hàng đầu với đánh giá và mô tả chi tiết. |
+| `search_by_category` | `location`, `category` | Tìm kiếm điểm du lịch theo loại (museum, landmark, monument, natural, etc.). |
+| `get_itinerary_suggestion` | `location`, `duration_days` | Lập lịch trình du lịch đa ngày (1-7 ngày) với hoạt động theo giờ. |
 
 ### 2.3 LLM Providers Used
 - **Primary**: OpenAI `gpt-4o`

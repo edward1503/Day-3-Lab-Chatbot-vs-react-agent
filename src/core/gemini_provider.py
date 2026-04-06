@@ -51,3 +51,26 @@ class GeminiProvider(LLMProvider):
         )
         for chunk in responseStream:
             yield chunk.text
+
+    def chat_with_tools(self, prompt: str, system_prompt: Optional[str] = None, tools: Optional[list] = None) -> str:
+        """
+        Gọi LLM để tự động sử dụng function calling (tools) nếu cần thiết, 
+        và trả về string tổng hợp mượt mà.
+        """
+        from google.genai import types
+        
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
+
+        # Cấu hình chat, gắn mảng các python native functions vào
+        config = types.GenerateContentConfig(
+            tools=tools if tools else []
+        )
+        
+        # Bắt đầu chat để hỗ trợ automatic function calling
+        # Trong SDK mới, dùng client.chats.create để LLM tự gọi Tool và tự fetch loop
+        chat = self.client.chats.create(model=self.model_name, config=config)
+        response = chat.send_message(full_prompt)
+        
+        return response.text

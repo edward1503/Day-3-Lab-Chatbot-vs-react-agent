@@ -42,6 +42,7 @@ class TravelAgentState(TypedDict):
     # ── User Input ──
     user_request: str                           # Raw input từ user
     chat_history: list[dict]                    # Context lịch sử chat
+    intent: str                                 # "full_plan", "short_query", "conversational"
     travel_request: Optional[TravelRequest]     # Parsed structured request
 
     # ── Tool Results ──
@@ -69,6 +70,7 @@ def create_initial_state(user_input: str, chat_history: list = None) -> dict:
         "messages": [],
         "user_request": user_input,
         "chat_history": chat_history or [],
+        "intent": "conversational",
         "travel_request": None,
         "weather": None,
         "attractions": [],

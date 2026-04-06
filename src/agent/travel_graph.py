@@ -158,17 +158,29 @@ def parse_input_node(state: TravelAgentState) -> dict:
             try: return int(str(val).replace(',', '').replace(' ', ''))
             except: return default
 
-        # Xử lý conversational (hỏi chung chung, xin đề xuất)
-        if not parsed.get("is_enough_info") or not parsed.get("destination") or not parsed.get("days"):
+        # Kiểm tra Intent do LLM phân loại
+        intent = parsed.get("intent", "conversational")
+
+        if intent == "conversational":
             logger.log_event("NODE_INCOMPLETE", {"node": "parse_input", "reason": "conversational"})
             reply = reply_msg or "❓ Tôi cần thêm thông tin. Bạn muốn đi **đâu** và trong **bao nhiêu ngày**?"
             return {
+                "intent": intent,
                 "travel_request": None,
                 "current_step": "parse_input",
                 "messages": [("assistant", reply)],
             }
+            
+        if intent == "short_query":
+            logger.log_event("NODE_REDIRECT", {"node": "parse_input", "to": "short_query"})
+            return {
+                "intent": intent,
+                "travel_request": None,
+                "current_step": "parse_input",
+                "messages": [("assistant", reply_msg or "🔍 Đang tìm kiếm thông tin ngắn cho bạn...")]
+            }
 
-        # Nếu đã đủ thông tin, parse request
+        # Nếu intent == "full_plan", parse request chuẩn
         budget_val = _safe_float(parsed.get("budget"), 5_000_000)
         num_people_val = _safe_int(parsed.get("num_people"), 1)
         days_val = _safe_int(parsed.get("days"), 1)
@@ -192,6 +204,7 @@ def parse_input_node(state: TravelAgentState) -> dict:
         start_msg += f"\n\n🔍 Đang kiểm tra thời tiết tại {travel_request.destination}..."
 
         return {
+            "intent": intent,
             "travel_request": travel_request,
             "current_step": "parse_input",
             "messages": [("assistant", start_msg)],
@@ -207,11 +220,66 @@ def parse_input_node(state: TravelAgentState) -> dict:
             reply_msg = "🤖 Xin lỗi, tôi không xử lý được thông tin này do lỗi hệ thống. Bạn có thể nói rõ hơn được không? (Ví dụ: 'Tôi muốn đi Đà Lạt 3 ngày 2 triệu')"
 
         return {
+            "intent": "conversational",
             "travel_request": None,
             "current_step": "parse_input",
             "error": f"Lỗi catch trong parse_input: {error_msg}",
             "messages": [("assistant", reply_msg)]
         }
+
+
+def short_query_node(state: TravelAgentState) -> dict:
+    """
+    Node phụ: Dùng Auto Tool Calling để xử lý các câu hỏi lẻ tẻ không cần dàn plan.
+    """
+    logger.log_event("NODE_START", {"node": "short_query"})
+    llm = get_llm()
+    
+    def weather_tool(city: str) -> str:
+        """Sử dụng để tra cứu, kiểm tra tình trạng thời tiết tại một thành phố bất kỳ."""
+        from src.tools.weather_tool import get_weather_forecast
+        try:
+            w = get_weather_forecast(city, 3)
+            return f"Condition: {w.condition}, Temp: {w.temperature_celsius}°C, Humidity: {w.humidity}%, Details: {w.forecast_summary}"
+        except Exception as e:
+            return f"Không lấy được thời tiết: {e}"
+
+    def hotel_prices_tool(city: str) -> str:
+        """Sử dụng khi user hỏi thăm về khách sạn và giá cả ở một thành phố nào đó."""
+        from src.tools.hotel_tool import hotel_finder
+        from datetime import datetime, timedelta
+        try:
+            checkin = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            checkout = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+            h = hotel_finder(city, checkin, checkout, max_price=5000000)
+            if not h.hotels:
+                return "Không tìm thấy khách sạn nào."
+            return "; ".join([f"{x.name} (Giá khoảng {x.price_per_night} VND/đêm, Hạng {x.rating} sao)" for x in h.hotels[:5]])
+        except Exception as e:
+            return f"Không lấy được khách sạn: {e}"
+
+    tools = [weather_tool, hotel_prices_tool]
+    
+    # Lấy lịch sử chat
+    chat_history = state.get("chat_history", [])
+    history_md = ""
+    for msg in chat_history[-5:]:
+        if isinstance(msg, dict):
+            history_md += f"{msg.get('role', 'user')}: {msg.get('content', '')}\n"
+
+    prompt = f"Lịch sử chat:\n{history_md}\n\nHiện tại User hỏi: {state['user_request']}"
+    
+    try:
+        reply = llm.chat_with_tools(prompt, system_prompt=SYSTEM_PROMPT, tools=tools)
+    except Exception as e:
+        reply = f"⚠️ Lỗi hệ thống khi tìm thông tin ngắn: {e}"
+        
+    logger.log_event("NODE_COMPLETE", {"node": "short_query"})
+    
+    return {
+        "current_step": "short_query",
+        "messages": [("assistant", reply)]
+    }
 
 
 def check_weather_node(state: TravelAgentState) -> dict:

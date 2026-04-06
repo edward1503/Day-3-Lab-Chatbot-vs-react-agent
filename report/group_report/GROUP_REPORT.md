@@ -17,7 +17,40 @@
 
 ## 2. System Architecture & Tooling
 
-### 2.1 ReAct Loop Implementation
+### 2.1 Hybrid Architecture Flowchart (LangGraph + ReAct)
+Hệ thống sử dụng kiến trúc lai (Hybrid) kết hợp sự chặt chẽ của LangGraph cho các kế hoạch phức tạp và sự linh hoạt của ReAct Agent cho các tác vụ hỏi đáp nhanh.
+
+```mermaid
+graph TD
+    classDef userNode fill:#f9f871,stroke:#333,stroke-width:2px,color:#333;
+    classDef processNode fill:#00c9a7,stroke:#333,stroke-width:2px,color:#fff;
+    classDef reactNode fill:#ff8066,stroke:#333,stroke-width:2px,color:#fff;
+    classDef endNode fill:#4d8076,stroke:#333,stroke-width:2px,color:#fff;
+    classDef conditionNode fill:#845ec2,stroke:#333,stroke-width:2px,color:#fff;
+
+    Start(("Bắt Đầu")):::userNode --> ParseInput["1. parse_input<br>(Xác định Intent)"]:::processNode
+    ParseInput --> IntentCheck{"Intent là gì?"}:::conditionNode
+    
+    %% Nhánh 1: Direct QA
+    IntentCheck -- "direct_qa" --> DirectQA["2a. direct_qa_node<br>(ReAct Agent)"]:::reactNode
+    DirectQA <--> ReActLoop(("TAO Loop")):::reactNode
+    DirectQA --> END(("Kết Thúc")):::endNode
+    
+    %% Nhánh 2: Plan Trip
+    IntentCheck -- "plan_trip" --> CheckWeather["2b. check_weather"]:::processNode
+    IntentCheck -- "Thiết Info" --> END
+    
+    CheckWeather --> WeatherCheck{"Thời tiết?"}:::conditionNode
+    WeatherCheck -- "Xấu" --> AskReplan["ask_user_replan"]:::processNode
+    AskReplan --> WaitUser(("Chờ User")):::userNode -.-> ProcessReplan["process_replan_response"]:::processNode --> SearchAttractions
+    
+    WeatherCheck -- "Tốt" --> SearchFlights["3. search_flights"]:::processNode --> SearchAttractions["4. search_attractions"]:::processNode
+    SearchAttractions --> CalcDistances["5. calculate_distances"]:::processNode --> FindHotels["6. find_hotels"]:::processNode
+    FindHotels --> EstBudget["7. estimate_budget"]:::processNode --> GeneratePlan["8. generate_plan"]:::processNode
+    GeneratePlan --> SummaryTrace["9. summarize_agent_trace"]:::processNode --> END
+```
+
+### 2.2 ReAct Loop Implementation
 Luồng thực thi ReAct được triển khai thông qua một vòng lặp `while` trong `agent.py`. Agent nhận System Prompt chứa mô tả công cụ, sau đó trả về định dạng JSON (với Pydantic validate) cấu trúc `thought`, `action`, `action_input`. Nếu `action` được gọi, `_execute_tool` sẽ kích hoạt Tool và trả kết quả về `Observation` trong lịch sử để LLM suy luận tiếp. Vòng lặp dừng lại khi tìm thấy `final_answer` hoặc vượt quá `max_steps`.
 
 ### 2.2 Tool Definitions (Inventory)

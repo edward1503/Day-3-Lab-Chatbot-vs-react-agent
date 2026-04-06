@@ -172,6 +172,18 @@ class ReActAgent:
             elif tool_name == "explore_top_attractions":
                 from src.tools.activities_itinerary import explore_top_attractions
                 return str(explore_top_attractions(**args))
+            elif tool_name == "search_by_category":
+                from src.tools.activities_itinerary import search_by_category
+                return str(search_by_category(**args))
+            elif tool_name == "get_itinerary_suggestion":
+                from src.tools.activities_itinerary import get_itinerary_suggestion
+                return str(get_itinerary_suggestion(**args))
+            elif tool_name == "get_hotel_details":
+                from src.tools.stays_hotels import get_hotel_details
+                return str(get_hotel_details(**args))
+            elif tool_name == "compare_hotels":
+                from src.tools.stays_hotels import compare_hotels
+                return str(compare_hotels(**args))
             # ... Thêm các tool khác tại đây
         except Exception as e:
             return f"Cần cung cấp dữ liệu hợp lệ cho {tool_name}. Lỗi: {str(e)}"

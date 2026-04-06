@@ -1,8 +1,17 @@
+# === Core Dependencies ===
 openai>=1.0.0
-google-generativeai>=0.5.0
+google-genai>=0.1.0
 python-dotenv>=1.0.0
-pydantic>=2.0.0
-requests>=2.31.0
+pydantic>=2.12.0
+requests>=2.33.0
 pytest>=7.4.0
 llama-cpp-python>=0.2.0
 fast-flights>=2.2
+FlightRadar24API>=1.4.1
+
+# === LangGraph & UI Dependencies ===
+langgraph>=0.2.0
+gradio>=4.0.0
+googlemaps>=4.10.0
+serpapi>=2.0.0
+tavily-python>=0.7.0

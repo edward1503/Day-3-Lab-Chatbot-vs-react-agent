@@ -1,74 +1,136 @@
 import os
+import json
 import re
 from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field, ValidationError
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
+from src.telemetry.metrics import tracker
+
+class AgentAction(BaseModel):
+    thought: str = Field(description="Suy luận của Agent về bước tiếp theo")
+    action: Optional[str] = Field(None, description="Tên công cụ cần gọi (ví dụ: get_weather_forecast)")
+    action_input: Optional[Dict[str, Any]] = Field(None, description="Tham số truyền vào cho công cụ")
+    final_answer: Optional[str] = Field(None, description="Câu trả lời cuối cùng cho người dùng")
 
 class ReActAgent:
     """
-    SKELETON: A ReAct-style Agent that follows the Thought-Action-Observation loop.
-    Students should implement the core loop logic and tool execution.
+    Hệ thống Agent ReAct cho Trợ Lý Lên Kế Hoạch Du Lịch.
+    Sử dụng Thought-Action-Observation loop và Pydantic để parse kết quả.
     """
     
     def __init__(self, llm: LLMProvider, tools: List[Dict[str, Any]], max_steps: int = 5):
         self.llm = llm
         self.tools = tools
         self.max_steps = max_steps
-        self.history = []
 
     def get_system_prompt(self) -> str:
-        """
-        TODO: Implement the system prompt that instructs the agent to follow ReAct.
-        Should include:
-        1.  Available tools and their descriptions.
-        2.  Format instructions: Thought, Action, Observation.
-        """
-        tool_descriptions = "\n".join([f"- {t['name']}: {t['description']}" for t in self.tools])
+        tool_descriptions = "\n".join([f"- {t['name']}: {t['description']} (Params: {t.get('parameters', 'None')})" for t in self.tools])
         return f"""
-        You are an intelligent assistant. You have access to the following tools:
+        Bạn là một Trợ Lý Lên Kế Hoạch Du Lịch Thông Minh. Bạn có quyền truy cập vào các công cụ sau:
         {tool_descriptions}
 
-        Use the following format:
-        Thought: your line of reasoning.
-        Action: tool_name(arguments)
-        Observation: result of the tool call.
-        ... (repeat Thought/Action/Observation if needed)
-        Final Answer: your final response.
+        QUY TẮC QUAN TRỌNG:
+        1. LUÔN LUÔN trả về kết quả dưới định dạng JSON khớp với schema sau:
+        {{
+            "thought": "suy luận của bạn",
+            "action": "tên_công_cụ_hoặc_null",
+            "action_input": {{ "param_name": "value" }} hoặc null,
+            "final_answer": "câu_trả_lời_cuối_cùng_hoặc_null"
+        }}
+        2. Nếu bạn đã có câu trả lời cuối cùng, hãy điền vào 'final_answer' và để 'action' là null.
+        3. Nếu cần thêm thông tin, hãy chọn một 'action' phù hợp.
+        4. KHÔNG ĐƯỢC trả về văn bản ngoài định dạng JSON này.
         """
 
     def run(self, user_input: str) -> str:
-        """
-        TODO: Implement the ReAct loop logic.
-        1. Generate Thought + Action.
-        2. Parse Action and execute Tool.
-        3. Append Observation to prompt and repeat until Final Answer.
-        """
         logger.log_event("AGENT_START", {"input": user_input, "model": self.llm.model_name})
         
-        current_prompt = user_input
+        # --- PHASE 0: OOD CHECK ---
+        # (Đơn giản hóa bằng cách hỏi LLM trực tiếp hoặc dùng regex)
+        if self._is_out_of_domain(user_input):
+            return "Xin lỗi, tôi là trợ lý du lịch. Tôi không thể hỗ trợ các vấn đề nằm ngoài phạm vi du lịch như y tế, chính trị hay lập trình."
+
+        history = [{"role": "user", "content": user_input}]
         steps = 0
 
         while steps < self.max_steps:
-            # TODO: Generate LLM response
-            # result = self.llm.generate(current_prompt, system_prompt=self.get_system_prompt())
+            # 1. Gọi LLM để lấy Thought/Action
+            response = self.llm.generate(
+                prompt=history[-1]["content"], 
+                system_prompt=self.get_system_prompt()
+            )
             
-            # TODO: Parse Thought/Action from result
+            # Ghi log metrics cho từng bước gọi LLM
+            tracker.track_request(
+                provider=response["provider"],
+                model=self.llm.model_name,
+                usage=response["usage"],
+                latency_ms=response["latency_ms"]
+            )
+
+            llm_output = response["content"]
             
-            # TODO: If Action found -> Call tool -> Append Observation
-            
-            # TODO: If Final Answer found -> Break loop
-            
+            try:
+                # 2. Parse JSON output dùng Pydantic
+                # Làm sạch chuỗi trước khi parse (loại bỏ markdown code blocks nếu có)
+                clean_json = re.sub(r'```json\s*|\s*```', '', llm_output).strip()
+                action_data = AgentAction.model_validate_json(clean_json)
+                
+                logger.log_event("AGENT_STEP", action_data.model_dump())
+
+                # 3. Kiểm tra Final Answer
+                if action_data.final_answer:
+                    logger.log_event("AGENT_END", {"status": "success", "steps": steps + 1})
+                    return action_data.final_answer
+
+                # 4. Thực thi Action
+                if action_data.action:
+                    observation = self._execute_tool(action_data.action, action_data.action_input or {})
+                    history.append({
+                        "role": "assistant", 
+                        "content": f"Observation: {observation}"
+                    })
+                else:
+                    break
+
+            except (ValidationError, json.JSONDecodeError) as e:
+                logger.error(f"Lỗi parse JSON hoặc Validate: {e}")
+                history.append({
+                    "role": "assistant", 
+                    "content": f"Lỗi định dạng JSON: Vui lòng thử lại và chỉ trả về JSON hợp lệ."
+                })
+
             steps += 1
             
-        logger.log_event("AGENT_END", {"steps": steps})
-        return "Not implemented. Fill in the TODOs!"
+        logger.log_event("AGENT_END", {"status": "timeout", "steps": steps})
+        return "Tôi đã cố gắng xử lý nhưng không tìm ra câu trả lời cuối cùng trong giới hạn bước cho phép."
 
-    def _execute_tool(self, tool_name: str, args: str) -> str:
-        """
-        Helper method to execute tools by name.
-        """
-        for tool in self.tools:
-            if tool['name'] == tool_name:
-                # TODO: Implement dynamic function calling or simple if/else
-                return f"Result of {tool_name}"
-        return f"Tool {tool_name} not found."
+    def _is_out_of_domain(self, user_input: str) -> bool:
+        # Tạm thời dùng từ khóa đơn giản, trong thực tế sẽ dùng LLM để phân loại (Classifier)
+        off_topic_keywords = ["thuốc", "bệnh", "code", "lập trình", "chính trị", "đảng"]
+        for kw in off_topic_keywords:
+            if kw in user_input.lower():
+                return True
+        return False
+
+    def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
+        # Import động các công cụ đã được Member A, B, C, D định nghĩa
+        try:
+            if tool_name == "get_weather_forecast":
+                from src.tools.weather_safety import get_weather_forecast
+                return get_weather_forecast(**args)
+            elif tool_name == "search_flights":
+                from src.tools.transportation import search_flights
+                return str(search_flights(**args))
+            elif tool_name == "search_hotels":
+                from src.tools.stays_hotels import search_hotels
+                return str(search_hotels(**args))
+            elif tool_name == "explore_top_attractions":
+                from src.tools.activities_itinerary import explore_top_attractions
+                return str(explore_top_attractions(**args))
+            # ... Thêm các tool khác tại đây
+        except Exception as e:
+            return f"Cần cung cấp dữ liệu hợp lệ cho {tool_name}. Lỗi: {str(e)}"
+            
+        return f"Công cụ {tool_name} chưa được tích hợp hoàn toàn."

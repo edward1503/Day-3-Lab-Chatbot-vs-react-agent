@@ -1,7 +1,7 @@
 # Group Report: Lab 3 - Production-Grade Agentic System
 
 - **Team Name**: Nhóm 2
-- **Team Members**: Nguyễn Duy Minh Hoàng (ID: 2A202600155), Nguyễn Lê Minh Luân (ID: 2A202600398), Đào Anh Quân (ID: 2A202600028)
+- **Team Members**: Nguyễn Duy Minh Hoàng (ID: 2A202600155), Nguyễn Lê Minh Luân (ID: 2A202600398), Đào Anh Quân (ID: 2A202600028), Nguyễn Đôn Đức (ID: 2A202600145)
 - **Deployment Date**: 2026-04-06
 
 ---

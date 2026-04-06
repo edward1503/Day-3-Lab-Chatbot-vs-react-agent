@@ -8,17 +8,19 @@
 
 ## 1. Executive Summary
 
-*Brief overview of the agent's goal and success rate compared to the baseline chatbot.*
+Báo cáo này trình bày kết quả triển khai hệ thống **Smart Travel Agent** - một nguyên mẫu (prototype) cấp Production cho lĩnh vực du lịch, vượt xa các giới hạn của Chatbot truyền thống. 
 
-- **Success Rate**: 95% on tested scenarios (including OOD detection).
-- **Key Outcome**: Hệ thống Agent ReAct có khả năng suy luận đa bước tốt hơn hẳn so với baseline chatbot. Thay vì đưa ra câu trả lời không có căn cứ, Agent có thể tra cứu giá vé máy bay thực tế (Google Flights), theo dõi chuyến bay thật (FlightRadar24) và kết hợp với dữ liệu thời tiết (Open-Meteo) để trả về lịch trình chính xác.
+- **Success Rate**: Đạt độ ổn định 95% trên các kịch bản kiểm thử (Hỏi đáp nhanh, Lên lịch trình, Nhận diện câu hỏi sai chủ đề).
+- **Key Outcome**: Hệ thống tự hào tích hợp thành công kiến trúc **Hybrid (Lai)**. Agent không còn bị ép buộc vào một luồng (workflow) duy nhất. Thay vào đó, nó có khả năng tự đánh giá ý định của người dùng (Intent) để tự động định tuyến:
+  - Dùng **LangGraph** để hoạch định các kế hoạch đa ngày phức tạp.
+  - Dùng **ReAct Agent** để linh hoạt giải quyết các câu hỏi lẻ tẻ, tra cứu tức thời về vé máy bay, thời tiết.
 
 ---
 
 ## 2. System Architecture & Tooling
 
 ### 2.1 Hybrid Architecture Flowchart (LangGraph + ReAct)
-Hệ thống sử dụng kiến trúc lai (Hybrid) kết hợp sự chặt chẽ của LangGraph cho các kế hoạch phức tạp và sự linh hoạt của ReAct Agent cho các tác vụ hỏi đáp nhanh.
+Hệ thống sử dụng kiến trúc lai kết hợp sự chặt chẽ của LangGraph cho các kế hoạch phức tạp và sự thông minh của ReAct Agent cho các tác vụ hỏi đáp nhanh.
 
 ```mermaid
 graph TD
@@ -38,7 +40,7 @@ graph TD
     
     %% Nhánh 2: Plan Trip
     IntentCheck -- "plan_trip" --> CheckWeather["2b. check_weather"]:::processNode
-    IntentCheck -- "Thiết Info" --> END
+    IntentCheck -- "Thiếu Info" --> END
     
     CheckWeather --> WeatherCheck{"Thời tiết?"}:::conditionNode
     WeatherCheck -- "Xấu" --> AskReplan["ask_user_replan"]:::processNode
@@ -50,79 +52,56 @@ graph TD
     GeneratePlan --> SummaryTrace["9. summarize_agent_trace"]:::processNode --> END
 ```
 
-### 2.2 ReAct Loop Implementation
-Luồng thực thi ReAct được triển khai thông qua một vòng lặp `while` trong `agent.py`. Agent nhận System Prompt chứa mô tả công cụ, sau đó trả về định dạng JSON (với Pydantic validate) cấu trúc `thought`, `action`, `action_input`. Nếu `action` được gọi, `_execute_tool` sẽ kích hoạt Tool và trả kết quả về `Observation` trong lịch sử để LLM suy luận tiếp. Vòng lặp dừng lại khi tìm thấy `final_answer` hoặc vượt quá `max_steps`.
+### 2.2 ReAct Loop & Memory Context (Direct QA)
+Khác với LangGraph tĩnh, luồng thực thi ReAct trong nhánh `direct_qa_node` ứng dụng kĩ thuật **TAO (Thought-Action-Observation)**:
+1. Nhận Lịch sử Chat và yêu cầu hiện tại để không "mất trí nhớ".
+2. Sinh ra JSON định nghĩa vòng lặp: `thought`, `action`, `action_input`.
+3. Nhận `Observation` từ Tool. Vòng lặp tái diễn đến khi có `final_answer`.
 
-### 2.2 Tool Definitions (Inventory)
-| Tool Name | Input Format | Use Case |
-| :--- | :--- | :--- |
-| `get_weather_forecast` | `location` (str) | Tìm kiếm dự báo thời tiết và nhiệt độ tại một địa danh cụ thể. |
-| `get_air_quality` | `location` (str) | Kiểm tra chất lượng không khí (AQI, PM2.5, PM10) của một thành phố. |
-| `search_flight_prices` | `origin`, `destination`, `date` | Lấy giá vé máy bay thật từ Google Flights trong một ngày cụ thể. |
-| `track_flight_status`  | `flight_number` (str) | Theo dõi lộ trình chuyến bay theo thời gian thực (Real-time). |
-| `search_hotels` | `location`, `check_in`, `check_out`, `guests` | Tìm kiếm khách sạn tại một địa điểm với dữ liệu giá thực tế (4-5 khách sạn/thành phố). |
-| `get_hotel_details` | `hotel_name`, `location` | Lấy thông tin chi tiết về chính sách, tiện ích và giờ nhận phòng của khách sạn. |
-| `compare_hotels` | `location`, `budget_min`, `budget_max` | So sánh khách sạn trong phạm vi giá ngân sách. |
-| `explore_top_attractions` | `location`, `limit`, `kind` | Khám phá các điểm du lịch hàng đầu với đánh giá và mô tả chi tiết. |
-| `search_by_category` | `location`, `category` | Tìm kiếm điểm du lịch theo loại (museum, landmark, monument, natural, etc.). |
-| `get_itinerary_suggestion` | `location`, `duration_days` | Lập lịch trình du lịch đa ngày (1-7 ngày) với hoạt động theo giờ. |
-
-### 2.3 LLM Providers Used
-- **Primary**: OpenAI `gpt-4o`
-- **Secondary (Backup)**: Xử lý cục bộ bằng Regex/Keyword logic cho trường hợp OOD đơn giản nếu LLM thất bại.
+### 2.3 Tool Definitions (Inventory)
+Hệ thống Agent được trang bị bộ công cụ (Tools) mạnh mẽ nhằm cung cấp thông tin theo thời gian thực (Real-time):
+- **Weather (`get_weather_forecast`)**: Tìm kiếm dự báo thời tiết và nhiệt độ API.
+- **Flight (`search_flight_prices`, `track_flight_status`)**: Lấy giá vé thật và theo dõi lộ trình chuyến bay. Tích hợp thuật toán tự động ánh xạ Tên Thành Phố sang Mã IATA.
+- **Hotel (`search_hotels`, `get_hotel_details`)**: Tìm kiếm khách sạn theo điểm đến.
+- **Attraction (`search_attractions`)**: Khám phá và gợi ý các điểm du lịch.
+- **Utility (`calculate_distance`, `estimate_budget`)**: Hạch toán tài chính (khách sạn, vé máy bay khứ hồi, ăn uống) để đánh giá tính khả thi.
 
 ---
 
-## 3. Telemetry & Performance Dashboard
+## 3. Root Cause Analysis (RCA) - Bug Fixes & Improvements
 
-*Analyze the industry metrics collected during the final test run.*
+Trong quá trình phát triển hệ thống Agentic, chúng tôi đã phát hiện và xử lý nhiều lỗ hổng lớn:
 
-- **Average Latency (P50)**: ~1500ms
-- **Max Latency (P99)**: ~4500ms (Khi phân tích chuỗi Action phức tạp)
-- **Average Tokens per Task**: ~500 tokens (Prompt + Completion)
+### 3.1 Bệnh "Mất trí nhớ ngắn hạn" của ReAct Agent
+- **Lỗi**: Khi hỏi *"Vé máy bay ngày mai"*, rồi chat tiếp *"Tìm hãng vietjet"*, Agent hoàn toàn quên điểm đi/đến.
+- **Root Cause**: LLM Provider thiết kế Stateless. Ở bước Observation, Agent chỉ thấy kết quả Tool mà mất Prompt gốc.
+- **Solution**: Quản lý lịch sử chặt chẽ bên trong `while` loop của `ReActAgent.run()`. Ghi đệm (Append) tất cả `thought/action` và `observation` vào `full_prompt`, đồng thời "mớm" thêm Lịch sử trò chuyện gần nhất vào State.
 
----
-
-## 4. Root Cause Analysis (RCA) - Failure Traces
-
-*Deep dive into why the agent failed.*
-
-### Case Study: Lỗi định dạng JSON, Thông số IATA và Tham số dư thừa
-- **Input**: "Lịch bay từ Hà Nội vào Sài Gòn" hoặc "Thời tiết hôm nay tại Tokyo"
-- **Observation**: 
-  1. Agent gọi `search_flight_prices` với `origin="Hà Nội"`, gây lõi ở phía thư viện `fast_flights` vì chỉ chấp nhận mã IATA.
-  2. Agent gọi `get_weather_forecast` kèm theo tham số `date` không tồn tại (Vd: `{"location": "Tokyo", "date": "hôm nay"}`), gây ra lỗi `TypeError`.
-  3. LLM trả về Markdown block (```json) khiến `Pydantic` báo lỗi parse.
-- **Root Cause**:
-  - LLM suy nghĩ giống người nên đưa toàn bộ tên địa danh thay vì mã IATA.
-  - LLM giả định công cụ có nhiều tính năng hơn thực tế (như lọc theo ngày).
-  - LLM có xu hướng tự bọc mã JSON để hiển thị đẹp hơn.
+### 3.2 OOD (Out-of-Domain) Cực Đoan & Hallucination về Ngày Tháng
+- **Lỗi**: User hỏi *"Tôi muốn vé ngày mai"*, Tool bão lỗi `NoneType`. Trả lời *"Có"* bị đánh dấu "Sai chủ đề".
+- **Root Cause**: Agent không biết hôm nay là ngày mấy nên không parse được ngày. Hàm OOD bên trong ReAct (không có ngữ cảnh) quá nhạy cảm.
 - **Solution**: 
-  1. Thêm chỉ thị tường minh vào **System Prompt** của Agent: "Tự động chuyển đổi tên địa danh sang mã sân bay IATA (Vd: HAN, SGN)".
-  2. Giới hạn mô tả công cụ trong `agent.py` để tránh LLM "sáng tạo" thêm tham số không hỗ trợ.
-  3. Xử lý làm sạch chuỗi trong mã Python `re.sub(r'```json\s*|\s*```', '', llm_output).strip()` trước khi parse JSON.
+  - Đưa `datetime.now()` vào rich context.
+  - Vô hiệu hoá Double Check OOD bên trong ReAct (thêm cờ `skip_ood=True`) vì `parse_input_node` đã kiểm duyệt.
+
+### 3.3 Missed Flight Data trong Bản Hoạch Định
+- **Lỗi**: Báo cáo Markdown bị thiếu chuyến bay và tổng chi phí bỏ sót vé máy bay.
+- **Solution**: Bổ sung `FlightRecommendation` vào Model, thêm logic Budget tính vé khứ hồi, và cập nhật luồng string template Markdown.
 
 ---
 
-## 5. Ablation Studies & Experiments
+## 4. Chatbot vs. AI Agent Comparison
 
-### Experiment 1: Keyword-based vs LLM-based OOD Detection
-- **Diff**: Thay vì dùng mảng tĩnh `["thuốc", "code"]`, đã gọi LLM để phân tích Intents (Travel/Weather vs OOD) ngay ở Phase 0.
-- **Result**: Tỉ lệ nhận diện sai chủ đề (False Positive/False Negative) giảm xuống gần như 0%. Nó có thể nhận biết và chặn ngay những câu phức tạp như "Nấu bún chả" hay "Hack Facebook".
-
-### Experiment 2 (Bonus): Chatbot vs Agent
-| Case | Chatbot Result | Agent Result | Winner |
-| :--- | :--- | :--- | :--- |
-| Chào hỏi (Giao tiếp) | Tốt | Tốt | Draw |
-| Tìm giá vé thực tế | Bịa đặt giá (Hallucination) | Chính xác (Gọi Google Flights) | **Agent** |
-| Câu hỏi ngoài lề (OOD) | Trả lời lan man | Từ chối một cách lịch sự | **Agent** |
+| Tiêu chí | Tác vụ | Chatbot Truyền Thống | X-Travel Agent System | Winner |
+| :--- | :--- | :--- | :--- | :--- |
+| **Logic Suy Luận** | Tư duy đa bước | Trả lời một chiều | **Tự lặp lại (Loop)** để sửa sai khi API lỗi | **Agent** |
+| **Dữ Liệu Khách Quan** | Cập nhật thời tiết/giá | Dữ liệu pre-train (Ảo giác) | **Fetch Real-Time API** | **Agent** |
+| **Luồng Hành Động** | Workflow | Rất cứng ngắc | **Hybrid Router** tự nhận biết ý định | **Agent** |
 
 ---
 
-## 6. Production Readiness Review
+## 5. Production Readiness Review & Next Steps
 
-*Considerations for taking this system to a real-world environment.*
-
-- **Security**: Cần làm sạch đầu vào ngăn chặn Prompt Injection, vì các prompt "hack" có thể dụ LLM trả lời bỏ qua hệ thống OOD.
-- **Guardrails**: Đã thiết lập giới hạn vòng lặp `max_steps = 5` để tránh LLM rơi vào vòng lặp vô tận gây tốn chi phí token.
-- **Scaling**: Nhu cầu thiết kế cấu trúc Async/Event-driven cho việc chờ API (như fetch FlightRadar24) để không làm block server main thread khi có nhiều người dùng đồng thời. Tích hợp LangGraph cho việc quản lý Follow-up, ReAct và State phức tạp hơn.
+- **Streaming Interface**: Nên chuyển sang `arun` / streaming Tokens để người dùng không phải chờ quá lâu cho cả vòng lặp Thought-Action tốn từ 2-4 giây.
+- **Security Check**: Tránh Prompt Injection khi user bẻ cong Intent Classifier hòng bắt Agent sinh thông tin cấm.
+- **Caching Mechanism**: Gọi API (Vd check vé HAN-SGN) cho mỗi người dùng quá tốn kém. Cần triển khai Redis Cache TTL 30 phút cho queries giống nhau.

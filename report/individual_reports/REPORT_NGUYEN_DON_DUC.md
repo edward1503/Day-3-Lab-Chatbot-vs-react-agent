@@ -1,12 +1,12 @@
-# Báo cáo Cá nhân: Lab 3 - Chatbot vs ReAct Agent
+# Individual Report: Lab 3 - Chatbot vs ReAct Agent
 
-- **Tên Sinh viên**: Nguyễn Đôn Đức
-- **Mã Sinh viên**: 2A202600145
-- **Ngày**: 06/04/2026
+- **Student Name**: Nguyễn Đôn Đức
+- **Student ID**: 2A202600145
+- **Date**: 06/04/2026
 
 ---
 
-## I. Đóng góp Kỹ thuật (15 Điểm)
+## I. Technical Contribution (15 Points)
 
 *Mô tả đóng góp cụ thể của bạn vào codebase (ví dụ: triển khai một công cụ cụ thể, sửa trình phân tích, v.v.).*
 

@@ -62,6 +62,26 @@ Output:
 
 
 # ============================================================
+# OOD CLASSIFICATION PROMPT — Kiểm tra nội dung ngoài phạm vi
+# ============================================================
+
+OOD_CLASSIFICATION_PROMPT = """Bạn là một chuyên gia phân loại ý định (Intent Classifier). 
+Nhiệm vụ của bạn là xác định xem câu hỏi của người dùng có liên quan đến các chủ đề sau hay không:
+1. Du lịch (Travel): Tìm vé máy bay, khách sạn, địa điểm tham quan, lịch trình.
+2. Thời tiết (Weather): Dự báo thời tiết, chất lượng không khí tại một địa điểm.
+3. Các lời chào hỏi xã giao thông thường.
+
+Nếu câu hỏi LIÊN QUAN đến các chủ đề trên, hãy trả về: IN_DOMAIN
+Nếu câu hỏi KHÔNG LIÊN QUAN (Ví dụ: Y tế, Chính trị, Lập trình, Nấu ăn, hack, hoặc các chủ đề khác), hãy trả về: OOD
+
+User input: "{user_input}"
+
+Trả về DUY NHẤT từ 'IN_DOMAIN' hoặc 'OOD'.
+"""
+
+
+
+# ============================================================
 # WEATHER ANALYSIS PROMPT — Phân tích thời tiết
 # ============================================================
 
@@ -205,6 +225,12 @@ PARSE_EXAMPLES = [
 def format_parse_prompt(user_input: str, chat_history: str = "Không có") -> str:
     """Tạo prompt để parse user input thành TravelRequest."""
     return PARSE_REQUEST_PROMPT.format(user_input=user_input, chat_history=chat_history)
+
+
+def format_ood_prompt(user_input: str) -> str:
+    """Tạo prompt để kiểm tra nội dung ngoài phạm vi (OOD)."""
+    return OOD_CLASSIFICATION_PROMPT.format(user_input=user_input)
+
 
 
 def format_weather_analysis(weather_data: dict) -> str:

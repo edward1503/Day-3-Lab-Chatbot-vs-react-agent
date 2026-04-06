@@ -31,6 +31,7 @@ from src.schemas.models import (
 from src.prompts.prompt import (
     SYSTEM_PROMPT,
     format_parse_prompt,
+    format_ood_prompt,
     format_weather_analysis,
     format_replan_prompt,
     format_final_plan_prompt,
@@ -40,7 +41,10 @@ from src.tools.attractions_tool import search_attractions
 from src.tools.distance_tool import calculate_distance
 from src.tools.hotel_tool import hotel_finder
 from src.tools.budget_tool import estimate_budget
+from src.tools.budget_tool import estimate_budget
 from src.core.gemini_provider import GeminiProvider
+from src.core.openai_provider import OpenAIProvider
+from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
 from src.telemetry.metrics import tracker
 
@@ -53,13 +57,22 @@ load_dotenv()
 
 _llm_instance = None
 
-def get_llm() -> GeminiProvider:
-    """Khởi tạo GeminiProvider từ .env config (singleton)."""
+def get_llm() -> LLMProvider:
+    """Khởi tạo LLMProvider từ .env config (singleton)."""
     global _llm_instance
     if _llm_instance is None:
-        api_key = os.getenv("GEMINI_API_KEY")
-        model_name = os.getenv("DEFAULT_MODEL", "gemini-2.5-flash")
-        _llm_instance = GeminiProvider(model_name=model_name, api_key=api_key)
+        provider_type = os.getenv("DEFAULT_PROVIDER", "google").lower()
+        model_name = os.getenv("DEFAULT_MODEL")
+        
+        if provider_type == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+            model_name = model_name or "gpt-4o"
+            _llm_instance = OpenAIProvider(model_name=model_name, api_key=api_key)
+        else:
+            api_key = os.getenv("GEMINI_API_KEY")
+            model_name = model_name or "gemini-2.5-flash"
+            _llm_instance = GeminiProvider(model_name=model_name, api_key=api_key)
+            
     return _llm_instance
 
 
@@ -127,6 +140,23 @@ def parse_input_node(state: TravelAgentState) -> dict:
 
     if not history_str:
         history_str = "Không có"
+
+    # --- PHASE 0: OOD CHECK ---
+    ood_prompt = format_ood_prompt(state["user_request"])
+    try:
+        ood_response = _call_llm(ood_prompt, system_prompt="Bạn là trợ lý phân loại ý định chính xác.", context="ood_check")
+        ood_result = ood_response.strip().upper()
+        
+        # Check if LLM detected OOD content
+        if "OOD" in ood_result and "IN_DOMAIN" not in ood_result:
+            logger.log_event("OOD_DETECTED", {"input": state["user_request"], "reason": "graph_classifier"})
+            return {
+                "travel_request": None,
+                "current_step": "parse_input",
+                "messages": [("assistant", "Xin lỗi bạn, tôi là trợ lý được thiết kế chuyên biệt để hỗ trợ lên kế hoạch du lịch và cập nhật thời tiết. Hiện tại tôi chưa thể hỗ trợ các chủ đề khác như y tế, chính trị hay lập trình. Nếu bạn có bất kỳ thắc mắc nào về chuyến đi sắp tới, hãy cho tôi biết nhé!")],
+            }
+    except Exception as e:
+        logger.error(f"OOD check failed: {e}")
 
     prompt = format_parse_prompt(state["user_request"], chat_history=history_str)
 

@@ -1,7 +1,7 @@
 # Group Report: Lab 3 - Production-Grade Agentic System
 
 - **Team Name**: Nhóm 2
-- **Team Members**: Nguyễn Duy Minh Hoàng (ID: 2A202600155), [Tên Thành viên 2, ...]
+- **Team Members**: Nguyễn Duy Minh Hoàng (ID: 2A202600155), Nguyễn Lê Minh Luân (ID: 2A202600398)
 - **Deployment Date**: 2026-04-06
 
 ---
@@ -48,13 +48,20 @@ Luồng thực thi ReAct được triển khai thông qua một vòng lặp `whi
 
 *Deep dive into why the agent failed.*
 
-### Case Study: Lỗi định dạng JSON và Lỗi tham số IATA
-- **Input**: "Lịch bay từ Hà Nội vào Sài Gòn"
-- **Observation**: Agent gọi `search_flight_prices` với `origin="Hà Nội"`, gây lõi ở phía thư viện `fast_flights` vì chỉ chấp nhận mã IATA. Hoặc LLM trả lời kèm theo Markdown block (```json) khiến `Pydantic` báo lỗi parse.
-- **Root Cause**: LLM suy nghĩ giống người nên đưa toàn bộ tên địa danh thay vì mã IATA, và LLM có xu hướng tự bọc mã JSON.
+### Case Study: Lỗi định dạng JSON, Thông số IATA và Tham số dư thừa
+- **Input**: "Lịch bay từ Hà Nội vào Sài Gòn" hoặc "Thời tiết hôm nay tại Tokyo"
+- **Observation**: 
+  1. Agent gọi `search_flight_prices` với `origin="Hà Nội"`, gây lõi ở phía thư viện `fast_flights` vì chỉ chấp nhận mã IATA.
+  2. Agent gọi `get_weather_forecast` kèm theo tham số `date` không tồn tại (Vd: `{"location": "Tokyo", "date": "hôm nay"}`), gây ra lỗi `TypeError`.
+  3. LLM trả về Markdown block (```json) khiến `Pydantic` báo lỗi parse.
+- **Root Cause**:
+  - LLM suy nghĩ giống người nên đưa toàn bộ tên địa danh thay vì mã IATA.
+  - LLM giả định công cụ có nhiều tính năng hơn thực tế (như lọc theo ngày).
+  - LLM có xu hướng tự bọc mã JSON để hiển thị đẹp hơn.
 - **Solution**: 
   1. Thêm chỉ thị tường minh vào **System Prompt** của Agent: "Tự động chuyển đổi tên địa danh sang mã sân bay IATA (Vd: HAN, SGN)".
-  2. Xử lý làm sạch chuỗi trong mã Python `re.sub(r'```json\s*|\s*```', '', llm_output).strip()` trước khi parse JSON.
+  2. Giới hạn mô tả công cụ trong `agent.py` để tránh LLM "sáng tạo" thêm tham số không hỗ trợ.
+  3. Xử lý làm sạch chuỗi trong mã Python `re.sub(r'```json\s*|\s*```', '', llm_output).strip()` trước khi parse JSON.
 
 ---
 

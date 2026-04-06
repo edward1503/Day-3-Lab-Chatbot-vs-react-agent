@@ -1,6 +1,13 @@
 from typing import List, Dict, Any, Optional
 from fast_flights import FlightData, Passengers, get_flights
-from FlightRadar24 import FlightRadar24API
+
+# Try to import FlightRadar24, but make it optional
+try:
+    from FlightRadar24 import FlightRadar24API
+    FLIGHTRADAR24_AVAILABLE = True
+except ImportError:
+    FLIGHTRADAR24_AVAILABLE = False
+    FlightRadar24API = None
 
 def search_flight_prices(origin: str, destination: str, date: str) -> str:
     """
@@ -39,6 +46,10 @@ def track_flight_status(flight_number: str) -> str:
     Args:
         flight_number: Số hiệu chuyến bay (VD: VN213, VJ123)
     """
+    if not FLIGHTRADAR24_AVAILABLE:
+        return (f"⚠️  FlightRadar24 module không có sẵn. "
+                f"Chuyên bay {flight_number} có thể được theo dõi tại https://www.flightradar24.com/")
+    
     try:
         api = FlightRadar24API()
         airline_prefix = flight_number[:2].upper()

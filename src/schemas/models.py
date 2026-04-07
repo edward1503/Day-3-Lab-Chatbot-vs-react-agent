@@ -55,10 +55,14 @@ class TravelRequest(BaseModel):
     )
     intent: str = Field(
         default="plan_trip",
-        description="Ý định: 'plan_trip' (lên kế hoạch đầy đủ) hoặc 'direct_qa' (hỏi đáp nhanh)"
+        description="Ý định ở mức điều hướng: 'plan_trip' | 'direct_qa' | 'chat'"
+    )
+    task: str = Field(
+        default="chat",
+        description="Nhóm tác vụ: chat | flight_only | hotel_only | attractions_only | weather_only | full_plan"
     )
     reply: Optional[str] = Field(default=None, description="Câu trả lời của bạn gửi cho người dùng...")
-    is_enough_info: bool = Field(default=True, description="true NẾU là plan_trip và đủ Destination+Days, hoặc NẾU là direct_qa và đủ info tra cứu")
+    is_enough_info: bool = Field(default=True, description="true nếu đủ thông tin để chạy tác vụ đã phân loại")
 
 
 

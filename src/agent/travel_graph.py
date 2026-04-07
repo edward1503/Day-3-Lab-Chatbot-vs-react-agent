@@ -31,7 +31,6 @@ from src.schemas.models import (
 from src.prompts.prompt import (
     SYSTEM_PROMPT,
     format_parse_prompt,
-    format_ood_prompt,
     format_weather_analysis,
     format_replan_prompt,
     format_final_plan_prompt,
@@ -42,7 +41,6 @@ from src.tools.attractions_tool import search_attractions
 
 from src.tools.distance_tool import calculate_distance
 from src.tools.hotel_tool import hotel_finder
-from src.tools.budget_tool import estimate_budget
 from src.tools.budget_tool import estimate_budget
 from src.core.gemini_provider import GeminiProvider
 from src.core.openai_provider import OpenAIProvider
@@ -132,6 +130,51 @@ def _get_travel_request(state: dict) -> TravelRequest:
     return tr
 
 
+def _get_tools_for_task(task: str) -> list[dict]:
+    """Chỉ expose tool cần thiết theo loại câu hỏi."""
+    tool_catalog = {
+        "weather_only": [
+            {
+                "name": "get_weather_forecast",
+                "description": "Lấy dự báo thời tiết và chất lượng không khí (AQI).",
+                "parameters": {"city": "string", "days": "int"},
+            }
+        ],
+        "flight_only": [
+            {
+                "name": "search_flight_prices",
+                "description": "Tìm kiếm giá vé máy bay theo điểm đi/điểm đến/ngày.",
+                "parameters": {"origin": "string", "destination": "string", "date": "YYYY-MM-DD"},
+            },
+            {
+                "name": "track_flight_status",
+                "description": "Theo dõi trạng thái chuyến bay real-time.",
+                "parameters": {"flight_number": "string"},
+            },
+        ],
+        "hotel_only": [
+            {
+                "name": "search_hotels",
+                "description": "Tìm khách sạn tại một thành phố theo ngày nhận/trả phòng.",
+                "parameters": {"location": "string", "check_in": "YYYY-MM-DD", "check_out": "YYYY-MM-DD"},
+            }
+        ],
+        "attractions_only": [
+            {
+                "name": "explore_top_attractions",
+                "description": "Tìm các địa điểm tham quan nổi bật theo thành phố.",
+                "parameters": {"city": "string", "limit": "int"},
+            },
+            {
+                "name": "search_by_category",
+                "description": "Tìm điểm đến theo chủ đề (ẩm thực, văn hóa, vui chơi...).",
+                "parameters": {"city": "string", "category": "string", "limit": "int"},
+            },
+        ],
+    }
+    return tool_catalog.get(task, [])
+
+
 # ============================================================
 # NODE FUNCTIONS — Mỗi function là 1 node trong graph
 # ============================================================
@@ -153,24 +196,6 @@ def parse_input_node(state: TravelAgentState) -> dict:
     if not history_str:
         history_str = "Không có"
 
-    # --- PHASE 0: OOD CHECK ---
-    ood_prompt = format_ood_prompt(state["user_request"], chat_history=history_str)
-    try:
-        ood_response = _call_llm(ood_prompt, system_prompt="Bạn là trợ lý phân loại ý định chính xác có ngữ cảnh.", context="ood_check")
-
-        ood_result = ood_response.strip().upper()
-        
-        # Check if LLM detected OOD content
-        if "OOD" in ood_result and "IN_DOMAIN" not in ood_result:
-            logger.log_event("OOD_DETECTED", {"input": state["user_request"], "reason": "graph_classifier"})
-            return {
-                "travel_request": None,
-                "current_step": "parse_input",
-                "messages": [("assistant", "Xin lỗi bạn, tôi là trợ lý được thiết kế chuyên biệt để hỗ trợ lên kế hoạch du lịch và cập nhật thời tiết. Hiện tại tôi chưa thể hỗ trợ các chủ đề khác như y tế, chính trị hay lập trình. Nếu bạn có bất kỳ thắc mắc nào về chuyến đi sắp tới, hãy cho tôi biết nhé!")],
-            }
-    except Exception as e:
-        logger.error(f"OOD check failed: {e}")
-
     prompt = format_parse_prompt(state["user_request"], chat_history=history_str)
 
     try:
@@ -187,9 +212,19 @@ def parse_input_node(state: TravelAgentState) -> dict:
         # Parse JSON
         parsed = json.loads(json_str)
 
-        # Xử lý conversational (hỏi chung chung, xin đề xuất)
-        intent_val = parsed.get("intent", "plan_trip")
+        # Parse routing signals
+        domain_val = str(parsed.get("domain", "IN_DOMAIN")).upper()
+        task_val = str(parsed.get("task", "chat")).lower()
+        intent_val = parsed.get("intent", "chat")
         is_enough = parsed.get("is_enough_info", False)
+
+        if domain_val == "OOD":
+            logger.log_event("OOD_DETECTED", {"input": state["user_request"], "reason": "merged_classifier"})
+            return {
+                "travel_request": None,
+                "current_step": "parse_input",
+                "messages": [("assistant", parsed.get("reply") or "Xin lỗi bạn, tôi chỉ hỗ trợ các câu hỏi về du lịch, khách sạn, vé máy bay, thời tiết và lịch trình.")],
+            }
         
         # Hàm safe parse 
         def _safe_float(val, default):
@@ -206,6 +241,15 @@ def parse_input_node(state: TravelAgentState) -> dict:
         num_people_val = _safe_int(parsed.get("num_people"), 1)
         days_val = _safe_int(parsed.get("days"), 1)
         transport_val = parsed.get("transport_mode", "driving")
+        if intent_val not in {"plan_trip", "direct_qa", "chat"}:
+            intent_val = "plan_trip" if task_val == "full_plan" else "direct_qa"
+        if task_val == "chat":
+            intent_val = "chat"
+        elif task_val == "full_plan":
+            intent_val = "plan_trip"
+        elif intent_val == "plan_trip":
+            # Ensure one-off tool requests do not accidentally trigger full chain.
+            intent_val = "direct_qa"
 
         travel_request = TravelRequest(
             destination=str(parsed.get("destination") or ""),
@@ -217,11 +261,19 @@ def parse_input_node(state: TravelAgentState) -> dict:
             origin=parsed.get("origin", "SGN"),
             start_date=parsed.get("start_date"),
             intent=intent_val,
+            task=task_val,
             is_enough_info=is_enough,
             reply=parsed.get("reply")
         )
 
-        logger.log_event("NODE_COMPLETE", {"node": "parse_input", "intent": intent_val, "is_enough": is_enough})
+        logger.log_event("NODE_COMPLETE", {"node": "parse_input", "intent": intent_val, "task": task_val, "is_enough": is_enough})
+
+        if intent_val == "chat":
+            return {
+                "travel_request": travel_request,
+                "current_step": "parse_input",
+                "messages": [("assistant", travel_request.reply or "Mình sẵn sàng hỗ trợ bạn về vé máy bay, khách sạn, lịch trình hoặc thời tiết.")],
+            }
 
         # Nếu là plan_trip mà chưa đủ info thì trả về reply hỏi thêm
         if intent_val == "plan_trip" and not is_enough:
@@ -338,14 +390,14 @@ def direct_qa_node(state: TravelAgentState) -> dict:
     current_date = datetime.now().strftime("%Y-%m-%d")
     rich_query = f"Hôm nay là: {current_date}\n\nLịch sử trò chuyện:\n{history_str}\n\nCâu hỏi hiện tại: {state['user_request']}\n\n(Lưu ý: Dùng Lịch sử trò chuyện để điền các thông tin còn thiếu như điểm đi, điểm đến, ngày tháng NẾU CẦN THIẾT.)"
     
-    # Định nghĩa danh sách tools cho ReActAgent
-
-    tools = [
-        {"name": "get_weather_forecast", "description": "Lấy dự báo thời tiết và chất lượng không khí (AQI).", "parameters": {"city": "string", "days": "int"}},
-        {"name": "search_flight_prices", "description": "Tìm kiếm giá vé máy bay HAN/SGN/DAD.", "parameters": {"origin": "string", "destination": "string", "date": "YYYY-MM-DD"}},
-        {"name": "track_flight_status", "description": "Theo dõi trạng thái chuyến bay real-time.", "parameters": {"flight_number": "string"}},
-        {"name": "search_hotels", "description": "Tìm khách sạn tại một thành phố.", "parameters": {"location": "string", "check_in": "YYYY-MM-DD", "check_out": "YYYY-MM-DD"}},
-    ]
+    req = _get_travel_request(state)
+    task = req.task if req else "chat"
+    tools = _get_tools_for_task(task)
+    if not tools:
+        return {
+            "current_step": "direct_qa",
+            "messages": [("assistant", req.reply if req and req.reply else "Mình cần thêm thông tin để tư vấn chính xác hơn về chuyến đi của bạn.")],
+        }
     
     agent = ReActAgent(llm=get_llm(), tools=tools)
     response = agent.run(rich_query, skip_ood=True)
@@ -362,6 +414,9 @@ def route_by_intent(state: TravelAgentState) -> str:
     if not req:
         return "END"
         
+    if req.intent == "chat":
+        return "END"
+
     if req.intent == "direct_qa":
         return "direct_qa"
     

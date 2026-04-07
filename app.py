@@ -302,7 +302,7 @@ if __name__ == "__main__":
         theme=gr.themes.Soft(
             primary_hue="blue",
             secondary_hue="cyan",
-            neutral_hue="slate",
+            neutral_hue="slate"
         ),
         css="""
         .gradio-container { max-width: 900px !important; margin: auto; }
